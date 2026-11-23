@@ -1,0 +1,18 @@
+[package]
+name = "rugkit"
+description = "Rugkit - The one framework that cares about visuals."
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+rugkit-render.workspace = true
+rugkit-shell.workspace = true
+
+[lints]
+workspace = true

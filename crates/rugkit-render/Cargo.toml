@@ -1,0 +1,18 @@
+[package]
+name = "rugkit-render"
+description = "Drawing for rugkit: the Painter API, geometry, colour and text, rendered with vello."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+vello.workspace = true
+parley.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

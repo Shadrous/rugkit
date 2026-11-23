@@ -1,0 +1,19 @@
+[package]
+name = "rugkit-shell"
+description = "Windowing, GPU surface and frame loop for rugkit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+rugkit-render.workspace = true
+winit.workspace = true
+pollster.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
