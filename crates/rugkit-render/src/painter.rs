@@ -5,7 +5,7 @@ use vello::kurbo::{Affine, Circle, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
 use crate::text::TextSystem;
-use crate::{Brush, Point, Rect, Shadow, Size, TextStyle};
+use crate::{Brush, Point, Rect, Shadow, Size, TextStyle, Transform};
 
 /// Records one frame's drawing. Get one from [`Canvas::begin_frame`].
 ///
@@ -15,6 +15,8 @@ pub struct Painter<'a> {
     scene: &'a mut Scene,
     text: &'a mut TextSystem,
     scale: f64,
+    /// The user transform (logical pixels), applied before the DPI scale.
+    user: Affine,
 }
 
 impl std::fmt::Debug for Painter<'_> {
@@ -32,7 +34,26 @@ impl Painter<'_> {
     }
 
     fn transform(&self) -> Affine {
-        Affine::scale(self.scale)
+        Affine::scale(self.scale) * self.user
+    }
+
+    /// Draws whatever `f` draws with `transform` applied on top of the current transform.
+    ///
+    /// ```no_run
+    /// # use rugkit_render::{Painter, Point, Transform, Rect, Color};
+    /// # fn demo(p: &mut Painter<'_>) {
+    /// let r = Rect::from_xywh(0.0, 0.0, 100.0, 40.0);
+    /// p.with_transform(Transform::scale_about(0.96, r.center()), |p| {
+    ///     p.fill_rect(r, 20.0, Color::BLACK);
+    /// });
+    /// # }
+    /// ```
+    pub fn with_transform<R>(&mut self, transform: Transform, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.user;
+        self.user *= transform.to_kurbo();
+        let out = f(self);
+        self.user = saved;
+        out
     }
 
     /// Fills a rectangle whose corners are rounded by `radius` (clamped to half the shorter side).
@@ -111,8 +132,10 @@ impl Painter<'_> {
     ) -> Size {
         let scale = self.scale;
         let layout = self.text.layout(text, style, max_width, scale as f32);
-        // Snap the origin to the physical pixel grid so glyphs stay crisp.
-        let transform = Affine::translate(((origin.x * scale).round(), (origin.y * scale).round()));
+        // The layout is in physical pixels. Snap the origin to the physical pixel grid so
+        // glyphs stay crisp when there is no user transform.
+        let snapped = Affine::translate(((origin.x * scale).round(), (origin.y * scale).round()));
+        let transform = Affine::scale(scale) * self.user * Affine::scale(1.0 / scale) * snapped;
         let color = style.color.to_peniko();
         for line in layout.lines() {
             for item in line.items() {
@@ -196,10 +219,12 @@ impl Canvas {
     /// pixels per logical pixel.
     pub fn begin_frame(&mut self, scale: f64) -> Painter<'_> {
         self.scene.reset();
+        self.text.begin_frame();
         Painter {
             scene: &mut self.scene,
             text: &mut self.text,
             scale,
+            user: Affine::IDENTITY,
         }
     }
 

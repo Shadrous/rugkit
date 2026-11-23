@@ -14,12 +14,18 @@ publish = false
 [workspace.dependencies]
 rugkit-render = { path = "crates/rugkit-render", version = "0.0.0" }
 rugkit-shell = { path = "crates/rugkit-shell", version = "0.0.0" }
+rugkit-reactive = { path = "crates/rugkit-reactive", version = "0.0.0" }
+rugkit-layout = { path = "crates/rugkit-layout", version = "0.0.0" }
+rugkit-widgets = { path = "crates/rugkit-widgets", version = "0.0.0" }
 
 vello = "0.12"
 parley = "0.13"
 winit = "0.30.13"
 pollster = "1.0"
 log = "0.4"
+slotmap = "1.1"
+taffy = { version = "0.16", default-features = false, features = ["std", "taffy_tree", "flexbox", "content_size"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
 
 [workspace.lints.rust]
 missing_docs = "deny"

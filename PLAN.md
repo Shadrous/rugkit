@@ -125,6 +125,12 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
 - **Folder name:** the project folder stays `rugs/`. Only the crate names use `rugkit`.
 
 - **Repo:** [github.com/Shadrous/rugkit](https://github.com/Shadrous/rugkit), public, created 2026-11-24 under the owner's account. It can move to a `rugkit` organisation later; GitHub redirects transferred repos.
+- **M1 API shape** (my calls):
+  - Reactive props are closures, via `IntoProp` (`.width(move || …)`).
+  - Each widget gets shared modifiers: width, height, padding, background, radius, elevation, shadow tint, scale, `animation(Spring)`, `no_animation()`.
+  - Elevation is drawn as two layered shadows: a contact shadow plus a wide one tinted by the shadow tint.
+  - Spring presets: `BOUNCY` (0.45s, damping 0.62) for geometry, `SNAPPY` for colours. Under Reduce Motion, geometry snaps and colours do a short fade.
+  - `row`/`column` centre children on the cross axis by default.
 - **Extra crate `rugkit-shell`** (added in M0): it holds the window, GPU surface and frame loop (winit + wgpu), so platform code stays out of the facade and the other crates. The facade `rugkit` only re-exports.
 - **Dev machine:** an M1 with a 60Hz display (no ProMotion), so 120fps can't be seen directly on it. The target is checked by measuring frame time (CPU work plus approximate GPU time under 8ms) with `FrameStats`, then confirmed on a ProMotion Mac before 0.1.
 
@@ -134,7 +140,20 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
   - Measured on a base M1 at a 2356×1572 physical window: average frame 7.4ms (CPU work plus waiting for the GPU to finish), worst frame about 8.5ms, CPU work about 2.5ms. The average is inside the 8ms budget; the worst frame is about 0.5ms over.
   - Not yet seen at 120Hz, because this Mac has a 60Hz display.
   - Known perf follow-ups: text is re-laid out every frame (no layout cache yet), and each glyph run allocates a small `Vec`. Profile the GPU side (large blurred shadows, the full-window gradient) before M1's frame scheduling lands.
-- M1–M6: not started.
+- **M1: The slick slice.** Done (2026-11-24).
+  - New crates:
+    - `rugkit-reactive`: Copy signals, memos, effects, owners and batching, with push-pull glitch-free propagation.
+    - `rugkit-layout`: taffy behind rugkit types.
+    - `rugkit-widgets`: retained tree, `Animated` springs, theme draft, `text`/`button`/`row`/`column`, `Ui`.
+  - The shell now has pointer input, on-demand frames (an idle window draws nothing) and macOS Reduce Motion. Render gained `Transform`/`with_transform` and a text layout cache (fixes the M0 follow-up of re-laying out text every frame).
+  - Tests: 16 reactive (incl. diamond, dynamic deps, disposal), 7 spring maths (analytic vs integrated, frame-rate independence, retargeting), 3 headless `Ui` interaction tests (hover/press/click, drag-off cancel, layout spring, Reduce Motion snap) and 3 layout tests.
+  - Counter demo while animating, on the base M1 at 1438×1333 physical: 5.2ms average frame, 6.5ms worst. That's within the 8ms budget.
+  - Known gaps carried forward:
+    - There's no way yet to wake the UI when a signal changes outside an input event (timers, async). This is needed for `resource()`.
+    - Children are static: no dynamic or keyed lists yet.
+    - Hit-testing ignores scale/lift transforms.
+    - The theme is a fixed constant (reactive tokens are M3).
+- M2–M6: not started.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.

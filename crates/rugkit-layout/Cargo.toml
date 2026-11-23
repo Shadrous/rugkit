@@ -1,0 +1,16 @@
+[package]
+name = "rugkit-layout"
+description = "Layout for rugkit: flexbox via taffy, behind rugkit's own style types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+taffy.workspace = true
+
+[lints]
+workspace = true

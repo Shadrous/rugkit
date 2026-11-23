@@ -13,6 +13,8 @@ publish.workspace = true
 [dependencies]
 rugkit-render.workspace = true
 rugkit-shell.workspace = true
+rugkit-reactive.workspace = true
+rugkit-widgets.workspace = true
 
 [lints]
 workspace = true

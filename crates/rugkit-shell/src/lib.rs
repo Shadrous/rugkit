@@ -4,7 +4,8 @@
 //! [`FrameInfo`] (size, time and [`FrameStats`]). winit and wgpu do the work underneath,
 //! but none of their types appear in this API.
 //!
-//! M0 scope: one window that redraws continuously. Reactive, on-demand redraws arrive in M1.
+//! Redraws happen on demand: after input events, and for as long as the app says it wants
+//! frames (see [`App::wants_frame`], e.g. while animations run).
 
 use std::fmt;
 use std::sync::Arc;
@@ -12,17 +13,54 @@ use std::time::{Duration, Instant};
 
 use rugkit_render::backend::vello::util::{RenderContext, RenderSurface};
 use rugkit_render::backend::vello::{self, wgpu};
-use rugkit_render::{Canvas, Color, Painter, Size};
+use rugkit_render::{Canvas, Color, Painter, Point, Size};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-/// Your application: draws a frame when asked.
+/// Your application: handles input and draws frames when asked.
 pub trait App: 'static {
-    /// Draws one frame. Called once per display refresh while the window is visible.
+    /// Draws one frame.
     fn draw(&mut self, painter: &mut Painter<'_>, frame: &FrameInfo);
+
+    /// Handles an input event. A redraw is always scheduled after an event.
+    fn event(&mut self, event: &InputEvent) {
+        let _ = event;
+    }
+
+    /// Whether another frame should follow the one just drawn (e.g. an animation is running).
+    ///
+    /// The default is `true`: redraw continuously. Return `false` when idle so the app uses
+    /// no CPU or GPU until the next event.
+    fn wants_frame(&self) -> bool {
+        true
+    }
+}
+
+/// A mouse or trackpad button.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PointerButton {
+    /// Primary (left) button or a trackpad click.
+    Primary,
+    /// Secondary (right) button.
+    Secondary,
+    /// Middle button.
+    Middle,
+}
+
+/// Input delivered to [`App::event`]. Positions are logical pixels in window coordinates.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum InputEvent {
+    /// The pointer moved.
+    PointerMove(Point),
+    /// A button was pressed.
+    PointerDown(Point, PointerButton),
+    /// A button was released.
+    PointerUp(Point, PointerButton),
+    /// The pointer left the window.
+    PointerLeave,
 }
 
 /// Settings for the window [`run`] opens.
@@ -65,6 +103,8 @@ pub struct FrameInfo {
     pub dt: Duration,
     /// Rolling performance numbers.
     pub stats: FrameStats,
+    /// Whether the OS asks for reduced motion (macOS: Accessibility › Display › Reduce motion).
+    pub reduce_motion: bool,
 }
 
 /// Rolling frame timings, averaged over roughly the last half second.
@@ -107,6 +147,9 @@ pub fn run(options: WindowOptions, app: impl App) -> Result<(), Error> {
         gpu: None,
         clock: Clock::default(),
         error: None,
+        cursor: None,
+        reduce_motion: platform::reduce_motion(),
+        reduce_motion_checked: Instant::now(),
     };
     event_loop
         .run_app(&mut shell)
@@ -131,9 +174,20 @@ struct Shell {
     gpu: Option<Gpu>,
     clock: Clock,
     error: Option<Error>,
+    /// Last pointer position in logical pixels.
+    cursor: Option<Point>,
+    reduce_motion: bool,
+    reduce_motion_checked: Instant,
 }
 
 impl Shell {
+    fn dispatch(&mut self, event: InputEvent) {
+        self.app.event(&event);
+        if let Some(gpu) = &self.gpu {
+            gpu.window.request_redraw();
+        }
+    }
+
     fn init_gpu(&mut self, event_loop: &ActiveEventLoop) -> Result<Gpu, Error> {
         let attrs = Window::default_attributes()
             .with_title(self.options.title.clone())
@@ -177,6 +231,10 @@ impl Shell {
             return;
         }
         let frame_start = Instant::now();
+        if frame_start - self.reduce_motion_checked > Duration::from_secs(1) {
+            self.reduce_motion = platform::reduce_motion();
+            self.reduce_motion_checked = frame_start;
+        }
         let scale = gpu.window.scale_factor();
         let (time, dt) = self.clock.tick(frame_start);
         let info = FrameInfo {
@@ -188,6 +246,7 @@ impl Shell {
             time,
             dt,
             stats: self.clock.stats,
+            reduce_motion: self.reduce_motion,
         };
 
         let mut painter = self.canvas.begin_frame(scale);
@@ -259,7 +318,11 @@ impl Shell {
         handle.queue.present(surface_texture);
 
         self.clock.record(cpu, gpu_time);
-        gpu.window.request_redraw();
+        if self.app.wants_frame() {
+            gpu.window.request_redraw();
+        } else {
+            self.clock.idle = true;
+        }
     }
 }
 
@@ -294,6 +357,29 @@ impl ApplicationHandler for Shell {
                 }
             }
             WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self.gpu.as_ref().map_or(1.0, |g| g.window.scale_factor());
+                let p = Point::new(position.x / scale, position.y / scale);
+                self.cursor = Some(p);
+                self.dispatch(InputEvent::PointerMove(p));
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.dispatch(InputEvent::PointerLeave);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => PointerButton::Primary,
+                    MouseButton::Right => PointerButton::Secondary,
+                    MouseButton::Middle => PointerButton::Middle,
+                    _ => return,
+                };
+                let Some(p) = self.cursor else { return };
+                self.dispatch(match state {
+                    ElementState::Pressed => InputEvent::PointerDown(p, button),
+                    ElementState::Released => InputEvent::PointerUp(p, button),
+                });
+            }
             _ => {}
         }
     }
@@ -311,14 +397,25 @@ struct Clock {
     gpu_sum: Duration,
     worst: Duration,
     gpu_seen: bool,
+    /// The previous frame didn't ask for a follow-up, so the gap before the next one is idle
+    /// time, not frame time.
+    idle: bool,
 }
 
 impl Clock {
     const WINDOW: Duration = Duration::from_millis(500);
+    const NOMINAL_FRAME: Duration = Duration::from_micros(16_667);
 
     fn tick(&mut self, now: Instant) -> (Duration, Duration) {
         let start = *self.start.get_or_insert(now);
-        let dt = self.last.map_or(Duration::ZERO, |l| now - l);
+        let dt = match self.last {
+            None => Duration::ZERO,
+            // Coming back from idle: report one nominal frame, so animations that start now
+            // don't jump by the whole idle gap.
+            Some(_) if self.idle => Self::NOMINAL_FRAME,
+            Some(l) => now - l,
+        };
+        self.idle = false;
         self.last = Some(now);
         (now - start, dt)
     }
@@ -351,5 +448,19 @@ impl Clock {
                 ..Self::default()
             };
         }
+    }
+}
+
+mod platform {
+    /// Whether the user asked the OS to reduce motion.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reduce_motion() -> bool {
+        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    }
+
+    /// Whether the user asked the OS to reduce motion. Not wired up off macOS yet.
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) fn reduce_motion() -> bool {
+        false
     }
 }

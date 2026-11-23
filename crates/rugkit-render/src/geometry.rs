@@ -144,3 +144,80 @@ impl Rect {
         vello::kurbo::Rect::new(self.x0, self.y0, self.x1, self.y1)
     }
 }
+
+/// A 2D affine transform (translation, scale, and so on) in logical pixels.
+///
+/// Compose transforms with [`Transform::then`]. `a.then(b)` applies `a` first, then `b`.
+///
+/// ```
+/// use rugkit_render::{Point, Transform, Vec2};
+///
+/// let t = Transform::scale_about(2.0, Point::new(10.0, 10.0)).then(Transform::translate(Vec2::new(5.0, 0.0)));
+/// assert_eq!(t.apply(Point::new(10.0, 10.0)), Point::new(15.0, 10.0));
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Transform {
+    /// Matrix coefficients `[a, b, c, d, e, f]`, mapping `(x, y)` to
+    /// `(a·x + c·y + e, b·x + d·y + f)`.
+    pub coeffs: [f64; 6],
+}
+
+impl Transform {
+    /// The transform that changes nothing.
+    pub const IDENTITY: Self = Self {
+        coeffs: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+
+    /// Moves by `offset`.
+    pub const fn translate(offset: Vec2) -> Self {
+        Self {
+            coeffs: [1.0, 0.0, 0.0, 1.0, offset.x, offset.y],
+        }
+    }
+
+    /// Scales uniformly about the origin.
+    pub const fn scale(s: f64) -> Self {
+        Self {
+            coeffs: [s, 0.0, 0.0, s, 0.0, 0.0],
+        }
+    }
+
+    /// Scales uniformly about `center`, which stays in place.
+    pub fn scale_about(s: f64, center: Point) -> Self {
+        Self {
+            coeffs: [s, 0.0, 0.0, s, center.x * (1.0 - s), center.y * (1.0 - s)],
+        }
+    }
+
+    /// Applies `self` first, then `next`.
+    pub fn then(self, next: Self) -> Self {
+        let [a1, b1, c1, d1, e1, f1] = self.coeffs;
+        let [a2, b2, c2, d2, e2, f2] = next.coeffs;
+        Self {
+            coeffs: [
+                a2 * a1 + c2 * b1,
+                b2 * a1 + d2 * b1,
+                a2 * c1 + c2 * d1,
+                b2 * c1 + d2 * d1,
+                a2 * e1 + c2 * f1 + e2,
+                b2 * e1 + d2 * f1 + f2,
+            ],
+        }
+    }
+
+    /// Maps a point through the transform.
+    pub fn apply(&self, p: Point) -> Point {
+        let [a, b, c, d, e, f] = self.coeffs;
+        Point::new(a * p.x + c * p.y + e, b * p.x + d * p.y + f)
+    }
+
+    pub(crate) fn to_kurbo(self) -> vello::kurbo::Affine {
+        vello::kurbo::Affine::new(self.coeffs)
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}

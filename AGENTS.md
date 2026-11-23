@@ -43,20 +43,33 @@ v1 runs only on macOS, but only `rugkit-shell` may contain platform-specific cod
 ```
 Cargo.toml                 workspace root (edition 2024, shared deps and lints)
 crates/
-  rugkit/                  facade crate: the one dependency users add; re-exports the others
-    examples/m0_pixels.rs  M0 demo: shapes, shadows, gradients, text, frame stats
-  rugkit-render/           Painter API, geometry, colour, text; vello + parley inside
-  rugkit-shell/            window, GPU surface and frame loop (winit + wgpu); platform code lives here
+  rugkit/                  facade crate: the one dependency users add; re-exports the others; `launch`
+    examples/counter.rs    M1 demo: signals, layout and springs (M1_AUTOPLAY, M1_PRINT_STATS)
+    examples/m0_pixels.rs  M0 demo: raw Painter drawing and frame stats
+  rugkit-reactive/         signals, memos, effects, owners (no dependencies, single-threaded)
+  rugkit-layout/           flexbox layout; taffy hidden behind rugkit types
+  rugkit-render/           Painter API, geometry, colour, Transform, text (+ layout cache); vello + parley inside
+  rugkit-widgets/          retained view tree, implicit springs (motion), theme tokens, text/button/row/column, `Ui`
+  rugkit-shell/            window, GPU surface, input events, on-demand frame loop, Reduce Motion; platform code lives here
 .github/workflows/ci.yml   fmt, clippy, tests, docs on a macOS runner
 docs/screenshots/          images used by README (window-only captures)
 PLAN.md                    product decisions, scope, milestones, status
 ```
 
-Planned crates (create them only when their milestone arrives): `rugkit-reactive` (M1), `rugkit-layout` (M1), `rugkit-widgets` (M1/M3), `rugkit-cli` / `cargo-rugkit` (M5).
+Dependency direction: `rugkit` → `rugkit-widgets` → (`rugkit-reactive`, `rugkit-layout`, `rugkit-render`, `rugkit-shell`); `rugkit-shell` → `rugkit-render`. The reactive, layout and render crates don't depend on each other.
+
+Planned crates (create them only when their milestone arrives): `rugkit-cli` / `cargo-rugkit` (M5).
+
+## How the UI works (keep this accurate)
+- Views are built **once** (`View::build`). Reactive props are closures. `BuildCx::bind` wraps each one in an `effect` that writes the new value onto its node.
+- Node visuals are `Animated<T>` values. Setters call `set_target`, which springs and keeps velocity. Before a node's first layout, values snap.
+- Never write signals while the tree is borrowed (layout and paint). `TreeHandle::with` panics with an explanation if you do. Input handling collects what it needs, releases the tree, then writes signals inside `batch`.
+- `Ui::wants_frame` is true only while something animates or changed, so the shell idles otherwise.
 
 ## Commands
 
 ```bash
+cargo run --release --example counter     # M1 demo window
 cargo run --release --example m0_pixels   # M0 demo window
 cargo build --workspace
 cargo test --workspace

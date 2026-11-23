@@ -16,7 +16,7 @@ mod text;
 
 pub use brush::{Brush, Shadow};
 pub use color::Color;
-pub use geometry::{Point, Rect, Size, Vec2};
+pub use geometry::{Point, Rect, Size, Transform, Vec2};
 pub use painter::{Canvas, Painter};
 pub use text::{FontFamily, FontWeight, TextStyle, TextSystem};
 

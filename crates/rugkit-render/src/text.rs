@@ -1,6 +1,8 @@
 //! Text styles and the shared text system (font discovery, shaping, layout).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use parley::{FontContext, FontFamilyName, GenericFamily, LayoutContext, StyleProperty};
 
@@ -11,7 +13,7 @@ use crate::Color;
 /// rugkit's design language uses rounded UI text for labels, buttons and headings and the
 /// regular UI face for dense content (tables, inputs). On macOS these are SF Pro Rounded and
 /// SF Pro, loaded from the system and never bundled.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FontFamily {
     /// Rounded UI face (SF Pro Rounded on macOS). The default.
     #[default]
@@ -126,13 +128,49 @@ impl Default for TextStyle {
 }
 
 const ROUNDED_FAMILY: &str = "rugkit UI Rounded";
+const CACHE_SWEEP_FRAMES: u64 = 120;
+
+/// Everything besides the text itself that affects a layout, with floats as bits so it can
+/// be hashed and compared exactly.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct LayoutParams {
+    family: FontFamily,
+    size: u32,
+    weight: u32,
+    line_height: u32,
+    letter_spacing: u32,
+    max_width: Option<u64>,
+    scale: u32,
+}
+
+impl LayoutParams {
+    fn new(style: &TextStyle, max_width: Option<f64>, scale: f32) -> Self {
+        Self {
+            family: style.family.clone(),
+            size: style.size.to_bits(),
+            weight: style.weight.0.to_bits(),
+            line_height: style.line_height.to_bits(),
+            letter_spacing: style.letter_spacing.to_bits(),
+            max_width: max_width.map(f64::to_bits),
+            scale: scale.to_bits(),
+        }
+    }
+}
+
+struct CachedLayout {
+    text: String,
+    params: LayoutParams,
+    layout: parley::Layout<()>,
+    last_used: u64,
+}
 const UI_FAMILY: &str = "rugkit UI";
 
 /// Owns fonts and shaping state. Create one per app and reuse it across frames.
 pub struct TextSystem {
     pub(crate) fonts: FontContext,
     pub(crate) layouts: LayoutContext<()>,
-    pub(crate) layout: parley::Layout<()>,
+    cache: HashMap<u64, CachedLayout>,
+    frame: u64,
     has_rounded: bool,
     has_ui: bool,
 }
@@ -161,13 +199,25 @@ impl TextSystem {
         Self {
             fonts,
             layouts: LayoutContext::new(),
-            layout: parley::Layout::new(),
+            cache: HashMap::new(),
+            frame: 0,
             has_rounded,
             has_ui,
         }
     }
 
-    /// Lays out `text` into the internal layout buffer at `scale` physical pixels per logical pixel.
+    /// Advances the cache clock. Layouts unused for a while are evicted.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
+        if self.frame.is_multiple_of(CACHE_SWEEP_FRAMES) {
+            let frame = self.frame;
+            self.cache
+                .retain(|_, e| frame - e.last_used < CACHE_SWEEP_FRAMES);
+        }
+    }
+
+    /// Returns the layout of `text` at `scale` physical pixels per logical pixel, reusing a
+    /// cached layout when the same text and style were laid out recently.
     pub(crate) fn layout(
         &mut self,
         text: &str,
@@ -175,6 +225,39 @@ impl TextSystem {
         max_width: Option<f64>,
         scale: f32,
     ) -> &parley::Layout<()> {
+        let params = LayoutParams::new(style, max_width, scale);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        params.hash(&mut hasher);
+        let key = hasher.finish();
+        let hit = self
+            .cache
+            .get(&key)
+            .is_some_and(|e| e.text == text && e.params == params);
+        if !hit {
+            let layout = self.build_layout(text, style, max_width, scale);
+            self.cache.insert(
+                key,
+                CachedLayout {
+                    text: text.to_owned(),
+                    params,
+                    layout,
+                    last_used: self.frame,
+                },
+            );
+        }
+        let entry = self.cache.get_mut(&key).expect("inserted above");
+        entry.last_used = self.frame;
+        &entry.layout
+    }
+
+    fn build_layout(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f64>,
+        scale: f32,
+    ) -> parley::Layout<()> {
         let families = self.families(&style.family);
         let mut builder = self
             .layouts
@@ -190,10 +273,9 @@ impl TextSystem {
             parley::LineHeight::FontSizeRelative(style.line_height),
         ));
         builder.push_default(StyleProperty::LetterSpacing(style.letter_spacing));
-        builder.build_into(&mut self.layout, text);
-        self.layout
-            .break_all_lines(max_width.map(|w| (w * f64::from(scale)) as f32));
-        &self.layout
+        let mut layout = builder.build(text);
+        layout.break_all_lines(max_width.map(|w| (w * f64::from(scale)) as f32));
+        layout
     }
 
     fn families(&self, family: &FontFamily) -> Vec<FontFamilyName<'static>> {
