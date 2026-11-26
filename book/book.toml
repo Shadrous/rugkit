@@ -1,0 +1,11 @@
+[book]
+title = "The rugkit Book"
+description = "Rugkit — The one framework that cares about visuals."
+authors = ["The rugkit contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/Shadrous/rugkit"

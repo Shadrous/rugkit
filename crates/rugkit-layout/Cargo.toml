@@ -1,6 +1,6 @@
 [package]
 name = "rugkit-layout"
-description = "Layout for rugkit: flexbox via taffy, behind rugkit's own style types."
+description = "Layout for rugkit: flexbox, grid and RTL mirroring via taffy, behind rugkit's own style types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

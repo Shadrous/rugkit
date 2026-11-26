@@ -362,7 +362,7 @@ impl<T: Clone + 'static> View for Table<T> {
                         });
 
                         // Subtle scrollbar thumb.
-                        if max_scroll > 1.0 && body_h > 20.0 {
+                        if max_scroll > 1.0 && body_h > 36.0 {
                             let thumb_h = ((body_h / total_h) * body_h).clamp(24.0, body_h - 8.0);
                             let frac = (y_off / max_scroll).clamp(0.0, 1.0);
                             let thumb_y = body_top + 4.0 + frac * (body_h - thumb_h - 8.0);

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
@@ -12,11 +12,11 @@ authors = ["The rugkit contributors"]
 publish = false
 
 [workspace.dependencies]
-rugkit-render = { path = "crates/rugkit-render", version = "0.0.0" }
-rugkit-shell = { path = "crates/rugkit-shell", version = "0.0.0" }
-rugkit-reactive = { path = "crates/rugkit-reactive", version = "0.0.0" }
-rugkit-layout = { path = "crates/rugkit-layout", version = "0.0.0" }
-rugkit-widgets = { path = "crates/rugkit-widgets", version = "0.0.0" }
+rugkit-render = { path = "crates/rugkit-render", version = "0.1.0" }
+rugkit-shell = { path = "crates/rugkit-shell", version = "0.1.0" }
+rugkit-reactive = { path = "crates/rugkit-reactive", version = "0.1.0" }
+rugkit-layout = { path = "crates/rugkit-layout", version = "0.1.0" }
+rugkit-widgets = { path = "crates/rugkit-widgets", version = "0.1.0" }
 
 vello = "0.12"
 parley = "0.13"
@@ -44,4 +44,6 @@ unsafe_code = "deny"
 all = { level = "warn", priority = -1 }
 
 [profile.release]
-debug = "line-tables-only"
+lto = "thin"
+strip = "symbols"
+codegen-units = 1

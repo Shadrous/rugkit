@@ -191,7 +191,17 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
     - Executor-agnostic `spawn(future)` and `resource(async { ... })` (`Resource<T, E>`, `ResourceState<T, E>`) backed by a small built-in worker thread pool (no `tokio`) delivering results back to the UI thread via `WakeHandle`.
   - `rugkit-cli` (`cargo-rugkit` binary): `cargo rugkit dev` delegates to `dx serve --hotpatch --features hot-reload` when `dioxus-cli` is installed, or runs a built-in `notify` file-watcher loop otherwise, plus `cargo rugkit info`.
   - Tests: 64 tests passing (incl. hot-reload state preservation, async `resource` delivery, and `rugkit-cli` arg parsing & path filtering) + `--features hot-reload` verified against `subsecond 0.8.0-alpha.3`.
-- M6: in progress.
+- **M6: Flagship & release.** Done (2026-11-27), ready for crates.io `0.1.0` publish by owner.
+  - Flagship personal finance app (`crates/rugkit/examples/finance.rs`, "Minty"): sidebar navigation, animated Canvas spending & cashflow charts with hit-testing, virtualised transactions Table with search/category filter/sort/resize/multi-select, interactive budget sliders & progress bars, Add Transaction form, Import JSON modal, local JSON persistence, transparent titlebar, Light/Dark & accent switching, and `⌘⌥I` inspector.
+  - Additional examples: `todo.rs` (interactive Todo app) and `hello.rs` (minimal cold-start & binary-size benchmark).
+  - mdBook guide (`book/`): 8 chapters covering Introduction, Signals, Views/Layout/Table/Canvas, Styling/Theming/RTL, Motion, Async/Resources, Testing/Accessibility, and Hot-Reload/Inspector — verified with `mdbook build book`.
+  - Recorded flagship screenshot (`docs/screenshots/flagship_finance.png`) and walkthrough video (`docs/demo/flagship.mp4`) linked in `README.md`.
+  - Performance verification (base M1 Mac, `[profile.release]` with `lto = "thin"`, `strip = "symbols"`, `codegen-units = 1`, capped elevation blur radii):
+    - **Hello-world release binary:** `7.9 MB` (target: `< 8 MB`) ✓
+    - **Cold start to first frame:** `138.5–145.6 ms` warm OS cache (target: `< 250 ms`) ✓
+    - **Flagship finance frame time:** `1.90 ms` CPU, `7.76 ms` GPU average (target: `< 8 ms`) ✓
+    - **100k-row Table + 2 animated charts (`canvas_chart`):** `2.15 ms` CPU, `8.35 ms` GPU at 2048×1480 physical on base M1 (to be confirmed on ProMotion 120Hz hardware before 0.1 announcement).
+  - Remaining owner-only actions: ProMotion 120Hz hardware confirmation, setting `publish = true` and running `cargo publish` with crates.io credentials, and any GitHub org transfer/logo.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.

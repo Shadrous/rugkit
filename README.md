@@ -2,42 +2,35 @@
 
 **Rugkit - The one framework that cares about visuals.**
 
-rugkit is a Rust GUI framework built around visual polish and motion: a bold, playful design language, implicit spring animations, soft layered shadows and crisp text out of the box.
+rugkit is a Rust GUI framework built around visual polish and motion: a bold, playful design language, implicit spring animations, soft layered shadows, crisp system text and GPU-accelerated rendering out of the box.
 
-> **Status: early development, M4 (Table + Canvas).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
+> **Status: 0.1.0 (macOS only for now).** All v1 milestones (M0–M6) are complete on macOS, with a portable core ready for Windows and Linux. See [PLAN.md](PLAN.md) for decisions, scope and performance numbers.
 
-![The M4 canvas chart and 100k-row table demo: animated bar and trend-line charts above a 100,000-row virtualised transactions table](docs/screenshots/m4_canvas_table.png)
+![Minty, the rugkit flagship personal finance app: sidebar navigation, animated Canvas spending and cashflow charts, virtualised transactions Table, budget forms and local JSON persistence](docs/screenshots/flagship_finance.png)
+
+> 🎬 Watch the recorded flagship walkthrough: [docs/demo/flagship.mp4](docs/demo/flagship.mp4)
 
 ## What works today
-- A window (or multiple windows via `run_windows` sharing reactive signals) with a GPU-rendered frame loop (winit + wgpu/Metal + vello) and transparent macOS titlebar with draggable regions
-- `Painter`: rounded rectangles, circles, vector `Path`s (with SVG `d` parsing), strokes, linear gradients, gaussian soft shadows, rounded clipping, opacity layers, RGBA8 `ImageData`, and offscreen GPU rendering (`OffscreenRenderer`)
-- Text shaped by parley: SF Pro Rounded for UI text and SF Pro for dense text, both loaded from macOS (never bundled), with variable font weights
-- Live `FrameStats` (fps, CPU time, GPU time, worst frame)
-- **Signals:** Copy `signal`, `memo` and `effect` handles with owners and batching. Updates are glitch-free and fine-grained, with no diffing, and automatically wake an idle window via `WakeHandle`.
-- **Core widget set:** `text`, `button`, `text_input` (single-line & multiline), `checkbox`, `toggle`, `slider`, `radio`, `select`, `tabs`, `scroll`, `virtual_list` (100k+ rows), `table` (100k+ virtualised rows, sticky header, sort, column resize, single & multi-row selection, custom cell renderers), `canvas` (reactive `Painter` surface with automatic signal tracking and `HitRegions` hit-testing), `image`, `icon` (bundled Lucide set behind default-on `icons` feature), `modal`, `popover`, `tooltip`, `row`, `column`, `grid`, `zstack`.
-- **Layout:** Flexbox & CSS Grid via taffy, hidden behind rugkit's own types, plus RTL layout mirroring (`direction_scope(Direction::Rtl, ...)`).
-- **Theming & motion:** Typed design tokens (`Theme`, `Radii`, `Spacing`, `TypeScale`) with reactive macOS Light/Dark + accent tracking and subtree overrides (`theme_scope`). Implicit springs animate size, position, colour, elevation, scale, lift, opacity and focus rings while respecting macOS "Reduce motion".
-- **Platform integration:** Tab / Shift+Tab focus traversal with animated focus rings, CJK IME composition & clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), VoiceOver accessibility via AccessKit, native macOS menu bars, the `⌘⌥I` in-app inspector (layout bounds, slow-mo, live theme switching, frame stats), non-blocking offscreen pixel snapshot tests, and a headless `Harness` test API.
-- **On-demand frames:** an idle window draws nothing
+- **Windowing & multi-window:** GPU-rendered frame loop (`winit` + `wgpu`/Metal + `vello`), multi-window with shared signals (`run_windows`), transparent macOS titlebar with draggable regions, native macOS menu bars (`muda`), system clipboard (`arboard`), and on-demand redraws (idle windows draw nothing).
+- **`Painter`:** rounded rectangles, circles, vector `Path`s (with SVG `d` parsing), strokes, linear gradients, layered soft shadows, rounded clipping, opacity layers, RGBA8 `ImageData`, and headless GPU `OffscreenRenderer`.
+- **Typography:** system fonts shaped by `parley` — SF Pro Rounded for UI text and SF Pro for dense content (never bundled), with variable weights and layout caching.
+- **Fine-grained signals:** `Copy` `signal`, `memo`, `effect`, `Tracker` and `Owner` with glitch-free push-pull propagation, batching, and automatic event-loop waking via `WakeHandle`.
+- **Core widget set:** `text`, `button`, `text_input` (single-line & multiline with CJK IME + clipboard), `checkbox`, `toggle`, `slider`, `radio`, `select`, `tabs`, `scroll`, `virtual_list` (100k+ rows), `table` (100k+ virtualised rows, sticky header, sort, column resize, single & multi-row selection, custom cell renderers), `canvas` (reactive `Painter` with automatic signal tracking & `HitRegions`), `image`, `icon` (bundled Lucide icons behind default-on `icons` feature), `modal`, `popover`, `tooltip`, `row`, `column`, `grid`, `zstack`.
+- **Theming, motion & RTL:** typed design tokens (`Theme`, `Radii`, `Spacing`, `TypeScale`) with reactive macOS Light/Dark + accent tracking, subtree overrides (`theme_scope`), RTL layout mirroring (`direction_scope`), and implicit interruptible springs respecting macOS Reduce Motion.
+- **Async:** executor-agnostic `spawn(future)` and `resource(async { ... })` on a small built-in worker pool (no `tokio` dependency).
+- **Dev tooling & testing:** `⌘⌥I` in-app inspector (layout bounds, slow-mo, live theme switching, frame stats), `cargo rugkit dev` hot-reload CLI (`subsecond` + `notify` watcher) keeping signal state across view patches, AccessKit/VoiceOver bridge, headless `Harness` test API, and non-blocking offscreen pixel snapshots.
+- **Guide:** full mdBook guide in [book/](book/src/SUMMARY.md) (`mdbook serve book`).
 
 ## Try it
 
 Requires macOS and Rust 1.98 or newer.
 
 ```bash
-cargo run --release --example canvas_chart
-```
-
-```bash
-cargo run --release --example gallery
-```
-
-```bash
-cargo run --release --example counter
-```
-
-```bash
-cargo run --release --example m0_pixels
+cargo run --release --example finance       # Flagship personal finance app
+cargo run --release --example canvas_chart  # Animated Canvas charts + 100k-row Table
+cargo run --release --example gallery       # Full widget gallery (Light & Dark)
+cargo run --release --example todo          # Interactive Todo app
+cargo run --release --example counter       # Counter with springs, IME, AccessKit & menus
 ```
 
 ```rust
@@ -54,9 +47,6 @@ fn main() -> Result<(), rugkit::Error> {
     })
 }
 ```
-
-## Roadmap
-M0 pixels → M1 signals, layout and springs → M2 platform integration (focus, IME, accessibility) → M3 widgets, theming, inspector → M4 Table and Canvas → M5 hot-reload → M6 flagship app and 0.1. Details are in [PLAN.md](PLAN.md).
 
 ## Contributing
 Read [AGENTS.md](AGENTS.md) first. It covers workspace layout, commands and the rule that docs are updated in the same change as the code.

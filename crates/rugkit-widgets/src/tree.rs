@@ -795,7 +795,7 @@ impl Tree {
                             }
                         });
                         // Draw subtle scrollbar thumb when content overflows.
-                        if scroll_max > 1.0 && frame.height() > 16.0 {
+                        if scroll_max > 1.0 && frame.height() > 36.0 {
                             let content_h = frame.height() + scroll_max;
                             let thumb_h = ((frame.height() / content_h) * frame.height())
                                 .clamp(24.0, frame.height() - 8.0);
@@ -1118,23 +1118,27 @@ impl Tree {
 }
 
 /// Two layered shadows for an elevation level: a tight contact shadow and a wide, tinted
-/// ambient one.
+/// ambient one. Blur radii are capped so large cards stay comfortably inside the 8ms GPU budget.
 fn paint_elevation(p: &mut Painter<'_>, frame: Rect, radius: f64, e: f64, tint: Color, ink: Color) {
     p.shadow(
         frame,
         radius,
-        &Shadow::new(ink.with_alpha(0.10), Vec2::new(0.0, e * 0.35), e * 1.2),
+        &Shadow::new(
+            ink.with_alpha(0.10),
+            Vec2::new(0.0, (e * 0.3).min(4.0)),
+            (e * 0.9).min(8.0),
+        ),
     );
-    let strength = (e / 8.0).min(1.5) as f32;
+    let strength = (e / 8.0).min(1.4) as f32;
     p.shadow(
         frame,
         radius,
         &Shadow::new(
-            tint.with_alpha(0.22 * strength),
-            Vec2::new(0.0, e * 1.6),
-            e * 4.0,
+            tint.with_alpha(0.20 * strength),
+            Vec2::new(0.0, (e * 1.1).min(14.0)),
+            (e * 2.2).min(20.0),
         )
-        .with_spread(-e * 0.4),
+        .with_spread(-(e * 0.35).min(4.0)),
     );
 }
 

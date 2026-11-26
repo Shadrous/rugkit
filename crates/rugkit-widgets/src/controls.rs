@@ -900,7 +900,7 @@ impl View for VirtualList {
                         let row_rect = Rect::from_xywh(rect.x0, row_y, rect.width(), item_h);
                         render_row(p, i, row_rect);
                     }
-                    if max_scroll > 1.0 && rect.height() > 16.0 {
+                    if max_scroll > 1.0 && rect.height() > 36.0 {
                         let thumb_h = ((rect.height() / total_h) * rect.height())
                             .clamp(24.0, rect.height() - 8.0);
                         let frac = (y_off / max_scroll).clamp(0.0, 1.0);

@@ -33,7 +33,8 @@
 //! For full control over drawing, implement [`App`] and use the [`Painter`] directly via
 //! [`run`] or [`run_windows`].
 //!
-//! **Status: M4.** See `PLAN.md` in the repository for the roadmap.
+//! **Status: 0.1.0 (M0–M6 complete, macOS only for now).** See `PLAN.md` in the repository
+//! for decisions, scope and roadmap.
 
 pub use rugkit_reactive::{
     Effect, Memo, Owner, Signal, Tracker, batch, effect, memo, on_cleanup, signal, untrack,

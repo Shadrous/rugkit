@@ -2875,7 +2875,7 @@ dependencies = [
 
 [[package]]
 name = "rugkit"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "rugkit-reactive",
  "rugkit-render",
@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "rugkit-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "clap",
  "notify",
@@ -2895,18 +2895,18 @@ dependencies = [
 
 [[package]]
 name = "rugkit-layout"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "taffy",
 ]
 
 [[package]]
 name = "rugkit-reactive"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "rugkit-render"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "parley",
@@ -2916,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "rugkit-shell"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2931,7 +2931,7 @@ dependencies = [
 
 [[package]]
 name = "rugkit-widgets"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "pollster",
  "rugkit-layout",
