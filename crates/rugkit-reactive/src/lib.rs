@@ -341,6 +341,11 @@ impl Owner {
         Self(runtime::current_owner())
     }
 
+    /// The thread's root owner, which is never disposed.
+    pub fn root() -> Self {
+        Self(runtime::root_owner())
+    }
+
     /// Runs `f` with this owner current.
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
         runtime::run_in_owner(self.0, f)

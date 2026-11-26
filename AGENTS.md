@@ -48,9 +48,9 @@ crates/
     examples/m0_pixels.rs  M0 demo: raw Painter drawing and frame stats
   rugkit-reactive/         signals, memos, effects, owners (no dependencies, single-threaded)
   rugkit-layout/           flexbox layout; taffy hidden behind rugkit types
-  rugkit-render/           Painter API, geometry, colour, Transform, text (+ layout cache); vello + parley inside
-  rugkit-widgets/          retained view tree, implicit springs (motion), theme tokens, text/button/row/column, `Ui`
-  rugkit-shell/            window, GPU surface, input events, on-demand frame loop, Reduce Motion; platform code lives here
+  rugkit-render/           Painter API, geometry, colour, Transform, clipping, text (+ layout cache & cursor hit-testing); vello + parley inside
+  rugkit-widgets/          retained view tree, implicit springs (motion), reactive light/dark theme, text/button/text_input/row/column, focus & IME, `Ui`, headless `Harness`
+  rugkit-shell/            window, GPU surface, input/keyboard/IME events, AccessKit bridge, native menus (muda), clipboard (arboard), transparent titlebar, system appearance, Reduce Motion, WakeHandle; platform code lives here
 .github/workflows/ci.yml   fmt, clippy, tests, docs on a macOS runner
 docs/screenshots/          images used by README (window-only captures)
 PLAN.md                    product decisions, scope, milestones, status
@@ -61,10 +61,11 @@ Dependency direction: `rugkit` → `rugkit-widgets` → (`rugkit-reactive`, `rug
 Planned crates (create them only when their milestone arrives): `rugkit-cli` / `cargo-rugkit` (M5).
 
 ## How the UI works (keep this accurate)
-- Views are built **once** (`View::build`). Reactive props are closures. `BuildCx::bind` wraps each one in an `effect` that writes the new value onto its node.
+- Views are built **once** (`View::build`). Reactive props are closures. `BuildCx::bind` wraps each one in an `effect` that writes the new value onto its node and wakes the shell event loop via `WakeHandle`.
 - Node visuals are `Animated<T>` values. Setters call `set_target`, which springs and keeps velocity. Before a node's first layout, values snap.
 - Never write signals while the tree is borrowed (layout and paint). `TreeHandle::with` panics with an explanation if you do. Input handling collects what it needs, releases the tree, then writes signals inside `batch`.
 - `Ui::wants_frame` is true only while something animates or changed, so the shell idles otherwise.
+- `Ui` exports an `A11yTree` (bridged to AccessKit in `rugkit-shell`) that powers both macOS VoiceOver and the headless `Harness` test API.
 
 ## Commands
 

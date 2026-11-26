@@ -79,7 +79,7 @@ impl BuildCx {
                     tree.with(|t| {
                         if t.nodes.contains_key(id) {
                             apply(t, id, value);
-                            t.needs_frame = true;
+                            t.mark_needs_frame();
                         }
                     });
                 });

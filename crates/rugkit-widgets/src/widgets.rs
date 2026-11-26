@@ -1,15 +1,16 @@
-//! Built-in widgets: [`text`], [`button`], [`row`] and [`column()`].
+//! Built-in widgets: [`text`], [`button`], [`text_input`], [`row`] and [`column()`].
 
 use std::rc::Rc;
 
 use rugkit_layout::{Align, Axis, Insets, Justify, LayoutStyle};
-use rugkit_reactive::signal;
-use rugkit_render::{Color, FontFamily, FontWeight, TextStyle};
+use rugkit_reactive::{Signal, signal};
+use rugkit_render::{Color, FontFamily, FontWeight, Rect, TextStyle};
+use rugkit_shell::Role;
 
 use crate::common::{Common, common_modifiers};
 use crate::prop::{IntoProp, Prop};
 use crate::theme::theme;
-use crate::tree::{Content, Interaction, Node, NodeId};
+use crate::tree::{Content, Interaction, Node, NodeId, TextInputState};
 use crate::view::{BuildCx, Children, View};
 
 // ---- Text -------------------------------------------------------------------------------
@@ -84,7 +85,6 @@ common_modifiers!(Text);
 
 impl View for Text {
     fn build(self, cx: &mut BuildCx) -> NodeId {
-        let initial_color = self.style.color;
         let id = cx.node(
             LayoutStyle::default(),
             Content::Text {
@@ -92,14 +92,17 @@ impl View for Text {
                 style: self.style,
             },
         );
-        cx.with_tree(|t| t.nodes[id].visual.text_color.snap(initial_color));
+        cx.with_tree(|t| {
+            t.nodes[id].role = Some(Role::Label);
+        });
         cx.bind(id, self.content, |t, id, v| t.set_text(id, v));
-        if let Some(color) = self.color {
-            cx.bind(id, color, |t, id, v| {
-                let n = &mut t.nodes[id];
-                Node::animate(n.laid_out, &mut n.visual.text_color, v);
-            });
-        }
+        let color_prop = self
+            .color
+            .unwrap_or_else(|| Prop::Dynamic(Rc::new(|| theme().ink)));
+        cx.bind(id, color_prop, |t, id, v| {
+            let n = &mut t.nodes[id];
+            Node::animate(n.laid_out, &mut n.visual.text_color, v);
+        });
         self.common.apply(cx, id);
         id
     }
@@ -115,7 +118,8 @@ enum Variant {
 
 /// A pressable button. Created with [`button`].
 ///
-/// Hover lifts it and deepens its shadow, pressing squashes it, and every change springs.
+/// Hover lifts it and deepens its shadow, pressing squashes it, focusing shows an accent ring,
+/// and every change springs.
 pub struct Button {
     label: Prop<String>,
     variant: Variant,
@@ -152,7 +156,7 @@ pub fn button(label: impl IntoProp<String>) -> Button {
 }
 
 impl Button {
-    /// Runs `f` when the button is clicked (pressed and released over it).
+    /// Runs `f` when the button is clicked or activated via keyboard/VoiceOver.
     pub fn on_click(mut self, f: impl Fn() + 'static) -> Self {
         self.on_click = Some(Rc::new(f));
         self
@@ -164,7 +168,7 @@ impl Button {
         self
     }
 
-    /// White with a soft neutral shadow, for secondary actions.
+    /// Surface-filled with a soft neutral shadow, for secondary actions.
     pub fn secondary(mut self) -> Self {
         self.variant = Variant::Secondary;
         self
@@ -182,15 +186,14 @@ common_modifiers!(Button);
 
 impl View for Button {
     fn build(self, cx: &mut BuildCx) -> NodeId {
-        let t = theme();
         let hovered = signal(false);
         let pressed = signal(false);
-        let (base, fg, rest_elevation, tint, gloss) = match self.variant {
-            Variant::Primary => {
-                let c = self.tint.unwrap_or(t.accent);
-                (c, Color::WHITE, 6.0, c, true)
-            }
-            Variant::Secondary => (t.surface, t.ink, 3.0, t.ink, false),
+        let focused = signal(false);
+        let variant = self.variant;
+        let custom_tint = self.tint;
+        let (rest_elevation, gloss) = match variant {
+            Variant::Primary => (6.0, true),
+            Variant::Secondary => (3.0, false),
         };
 
         let id = cx.node(
@@ -206,55 +209,231 @@ impl View for Button {
         );
         cx.with_tree(|tree| {
             let n = &mut tree.nodes[id];
+            n.role = Some(Role::Button);
             n.interaction = Some(Interaction {
                 hovered,
                 pressed,
+                focused,
+                focusable: true,
                 on_click: self.on_click,
             });
             n.visual.gloss = gloss;
-            n.visual.shadow_tint = tint;
             n.visual.radius.snap(999.0);
-            if self.variant == Variant::Secondary {
+            if variant == Variant::Secondary {
                 n.visual.border_width = 1.0;
-                n.visual.border_color.snap(t.ink.with_alpha(0.07));
             }
         });
 
         let label = text(self.label)
             .size(17.0)
             .weight(FontWeight::BOLD)
-            .color(fg)
+            .color(move || match variant {
+                Variant::Primary => Color::WHITE,
+                Variant::Secondary => theme().ink,
+            })
             .build(cx);
         cx.set_children(id, vec![label]);
 
         cx.bind(
             id,
             Prop::Dynamic(Rc::new(move || {
-                if pressed.get() {
+                let t = theme();
+                let base = match variant {
+                    Variant::Primary => custom_tint.unwrap_or(t.accent),
+                    Variant::Secondary => t.surface,
+                };
+                let bg = if pressed.get() {
                     base.mix(Color::BLACK, 0.10)
                 } else if hovered.get() {
                     base.mix(Color::WHITE, 0.10)
                 } else {
                     base
-                }
+                };
+                let tint = match variant {
+                    Variant::Primary => custom_tint.unwrap_or(t.accent),
+                    Variant::Secondary => t.ink,
+                };
+                let border = if variant == Variant::Secondary {
+                    t.ink.with_alpha(0.09)
+                } else {
+                    Color::TRANSPARENT
+                };
+                (bg, tint, border)
             })),
-            |tree, id, v| {
+            |tree, id, (bg, tint, border)| {
                 let n = &mut tree.nodes[id];
-                Node::animate(n.laid_out, &mut n.visual.background, v);
+                n.visual.shadow_tint = tint;
+                Node::animate(n.laid_out, &mut n.visual.background, bg);
+                Node::animate(n.laid_out, &mut n.visual.border_color, border);
             },
         );
         cx.bind(
             id,
-            Prop::Dynamic(Rc::new(move || match (hovered.get(), pressed.get()) {
-                (_, true) => (rest_elevation * 0.3, 0.94, 1.0),
-                (true, false) => (rest_elevation * 1.7, 1.03, -2.0),
-                (false, false) => (rest_elevation, 1.0, 0.0),
+            Prop::Dynamic(Rc::new(move || {
+                let (elev, scale, lift) = match (hovered.get(), pressed.get()) {
+                    (_, true) => (rest_elevation * 0.3, 0.94, 1.0),
+                    (true, false) => (rest_elevation * 1.7, 1.03, -2.0),
+                    (false, false) => (rest_elevation, 1.0, 0.0),
+                };
+                let ring = if focused.get() { 1.0 } else { 0.0 };
+                (elev, scale, lift, ring)
             })),
-            |tree, id, (elevation, scale, lift)| {
+            |tree, id, (elevation, scale, lift, ring)| {
                 let n = &mut tree.nodes[id];
                 Node::animate(n.laid_out, &mut n.visual.elevation, elevation);
                 Node::animate(n.laid_out, &mut n.visual.scale, scale);
                 Node::animate(n.laid_out, &mut n.visual.lift, lift);
+                Node::animate(n.laid_out, &mut n.visual.focus_ring, ring);
+            },
+        );
+        self.common.apply(cx, id);
+        id
+    }
+}
+
+// ---- TextInput --------------------------------------------------------------------------
+
+/// A single-line editable plain text field with full keyboard editing, clipboard and IME
+/// (CJK, dead keys, emoji) support. Created with [`text_input`].
+pub struct TextInput {
+    value: Signal<String>,
+    placeholder: String,
+    style: TextStyle,
+    on_submit: Option<Rc<dyn Fn(String)>>,
+    common: Common,
+}
+
+impl std::fmt::Debug for TextInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInput")
+            .field("placeholder", &self.placeholder)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A single-line text input bound to `value`.
+///
+/// Uses the regular UI typeface (`SF Pro` on macOS) for crisp, dense text editing, and
+/// supports CJK IME composition, selection, clipboard shortcuts and VoiceOver.
+///
+/// ```
+/// use rugkit_reactive::signal;
+/// use rugkit_widgets::text_input;
+///
+/// let note = signal(String::new());
+/// let field = text_input(note).placeholder("Add a note…");
+/// ```
+pub fn text_input(value: Signal<String>) -> TextInput {
+    TextInput {
+        value,
+        placeholder: String::new(),
+        style: TextStyle::new(16.0).family(FontFamily::Ui),
+        on_submit: None,
+        common: Common::default(),
+    }
+}
+
+impl TextInput {
+    /// Hint text shown when the field is empty. Also used as the default accessibility label.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Font size in logical pixels.
+    pub fn size(mut self, size: f32) -> Self {
+        self.style.size = size;
+        self
+    }
+
+    /// Runs `f` with the current text when Enter is pressed.
+    pub fn on_submit(mut self, f: impl Fn(String) + 'static) -> Self {
+        self.on_submit = Some(Rc::new(f));
+        self
+    }
+}
+
+common_modifiers!(TextInput);
+
+impl View for TextInput {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let hovered = signal(false);
+        let pressed = signal(false);
+        let focused = signal(false);
+        let value = self.value;
+        let initial_len = value.with_untracked(String::len);
+
+        let id = cx.node(
+            LayoutStyle {
+                padding: Insets::symmetric(12.0, 16.0),
+                min_width: Some(220.0),
+                ..Default::default()
+            },
+            Content::TextInput(TextInputState {
+                value,
+                placeholder: self.placeholder,
+                style: self.style,
+                cursor: initial_len,
+                anchor: initial_len,
+                preedit: None,
+                on_submit: self.on_submit,
+                cursor_rect: Rect::default(),
+                scroll_x: 0.0,
+            }),
+        );
+        cx.with_tree(|tree| {
+            let n = &mut tree.nodes[id];
+            n.role = Some(Role::TextInput);
+            n.interaction = Some(Interaction {
+                hovered,
+                pressed,
+                focused,
+                focusable: true,
+                on_click: None,
+            });
+            n.visual.radius.snap(16.0);
+            n.visual.border_width = 1.5;
+        });
+
+        // Subscribe to external edits of `value` so the window redraws.
+        cx.bind(
+            id,
+            Prop::Dynamic(Rc::new(move || value.get())),
+            |_, _, _| {},
+        );
+
+        cx.bind(
+            id,
+            Prop::Dynamic(Rc::new(move || {
+                let t = theme();
+                let is_focused = focused.get();
+                let is_hovered = hovered.get();
+                let bg = if is_focused {
+                    t.surface
+                } else if is_hovered {
+                    t.surface.mix(t.ink, 0.02)
+                } else {
+                    t.surface.mix(t.ink, 0.04)
+                };
+                let border = if is_focused {
+                    t.accent
+                } else if is_hovered {
+                    t.ink.with_alpha(0.22)
+                } else {
+                    t.ink.with_alpha(0.12)
+                };
+                let ring = if is_focused { 1.0 } else { 0.0 };
+                let elev = if is_focused { 4.0 } else { 1.0 };
+                (bg, border, t.ink, t.accent, ring, elev)
+            })),
+            |tree, id, (bg, border, ink, tint, ring, elev)| {
+                let n = &mut tree.nodes[id];
+                n.visual.shadow_tint = tint;
+                Node::animate(n.laid_out, &mut n.visual.background, bg);
+                Node::animate(n.laid_out, &mut n.visual.border_color, border);
+                Node::animate(n.laid_out, &mut n.visual.text_color, ink);
+                Node::animate(n.laid_out, &mut n.visual.focus_ring, ring);
+                Node::animate(n.laid_out, &mut n.visual.elevation, elev);
             },
         );
         self.common.apply(cx, id);

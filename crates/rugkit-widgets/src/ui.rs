@@ -1,24 +1,70 @@
-//! [`Ui`]: hosts a view tree in a window, routes input and runs the frame loop.
+//! [`Ui`]: hosts a view tree in a window, routes input, focus, IME, accessibility and animations.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use rugkit_layout::{Align, Justify, LayoutStyle, Length};
 use rugkit_reactive::{Owner, Signal, batch};
-use rugkit_render::{Painter, Size};
-use rugkit_shell::{App, FrameInfo, InputEvent, PointerButton};
+use rugkit_render::{Color, Painter, Point, Rect, Size};
+use rugkit_shell::{
+    A11yAction, A11yTree, App, FrameInfo, ImeEvent, ImeState, InputEvent, Key, Modifiers,
+    PointerButton, WakeHandle, WindowCommand,
+};
 
+use crate::motion::{Animated, Motion};
+use crate::theme::{set_appearance, theme};
 use crate::tree::{Content, NodeId, TreeHandle};
 use crate::view::{BuildCx, View};
+
+/// Clipboard storage used by [`Ui`]: system clipboard in real windows, or in-memory in tests.
+#[derive(Clone)]
+pub(crate) enum Clipboard {
+    System,
+    Memory(Rc<RefCell<String>>),
+}
+
+impl Clipboard {
+    fn get_text(&self) -> Option<String> {
+        match self {
+            Self::System => rugkit_shell::clipboard::get_text(),
+            Self::Memory(buf) => {
+                let s = buf.borrow();
+                (!s.is_empty()).then(|| s.clone())
+            }
+        }
+    }
+
+    fn set_text(&self, text: &str) {
+        match self {
+            Self::System => {
+                let _ = rugkit_shell::clipboard::set_text(text);
+            }
+            Self::Memory(buf) => {
+                *buf.borrow_mut() = text.to_owned();
+            }
+        }
+    }
+}
+
+type MenuHandler = Rc<dyn Fn(&str)>;
 
 /// A view tree hosted in a window. Implements [`App`], so it can be passed to
 /// `rugkit_shell::run` (the `rugkit` facade's `launch` does this for you).
 ///
 /// Frames are drawn only while something changes or animates. An idle window costs nothing.
 pub struct Ui {
-    tree: TreeHandle,
+    pub(crate) tree: TreeHandle,
     owner: Owner,
     hovered: Option<NodeId>,
     captured: Option<NodeId>,
+    focused: Option<NodeId>,
     animating: bool,
     last_size: Option<Size>,
+    background: Animated<Color>,
+    bg_initialized: bool,
+    commands: Vec<WindowCommand>,
+    clipboard: Clipboard,
+    on_menu_action: Option<MenuHandler>,
 }
 
 impl std::fmt::Debug for Ui {
@@ -56,18 +102,35 @@ impl Ui {
             owner,
             hovered: None,
             captured: None,
+            focused: None,
             animating: false,
             last_size: None,
+            background: Animated::new(theme().background),
+            bg_initialized: false,
+            commands: Vec::new(),
+            clipboard: Clipboard::System,
+            on_menu_action: None,
         }
     }
 
-    fn signals(&self, id: Option<NodeId>) -> Option<(Signal<bool>, Signal<bool>)> {
+    /// Registers a handler invoked when a native menu bar item is activated (by its item ID).
+    pub fn on_menu_action(mut self, f: impl Fn(&str) + 'static) -> Self {
+        self.on_menu_action = Some(Rc::new(f));
+        self
+    }
+
+    pub(crate) fn with_memory_clipboard(mut self, buf: Rc<RefCell<String>>) -> Self {
+        self.clipboard = Clipboard::Memory(buf);
+        self
+    }
+
+    fn signals(&self, id: Option<NodeId>) -> Option<(Signal<bool>, Signal<bool>, Signal<bool>)> {
         let id = id?;
         self.tree.with(|t| {
             t.nodes
                 .get(id)
                 .and_then(|n| n.interaction.as_ref())
-                .map(|i| (i.hovered, i.pressed))
+                .map(|i| (i.hovered, i.pressed, i.focused))
         })
     }
 
@@ -79,58 +142,423 @@ impl Ui {
         let new = self.signals(target);
         self.hovered = target;
         batch(|| {
-            if let Some((h, _)) = old {
+            if let Some((h, _, _)) = old {
                 h.set_if_changed(false);
             }
-            if let Some((h, _)) = new {
+            if let Some((h, _, _)) = new {
                 h.set_if_changed(true);
             }
         });
     }
+
+    fn set_focus(&mut self, target: Option<NodeId>) {
+        let target = target.filter(|&id| {
+            self.tree.with(|t| {
+                t.nodes
+                    .get(id)
+                    .and_then(|n| n.interaction.as_ref())
+                    .is_some_and(|i| i.focusable)
+            })
+        });
+        if target == self.focused {
+            return;
+        }
+        // Clear any uncommitted IME preedit when leaving a text input.
+        if let Some(old_id) = self.focused {
+            self.tree.with(|t| {
+                if let Some(n) = t.nodes.get_mut(old_id)
+                    && let Content::TextInput(state) = &mut n.content
+                {
+                    state.preedit = None;
+                }
+            });
+        }
+        let old = self.signals(self.focused);
+        let new = self.signals(target);
+        self.focused = target;
+        batch(|| {
+            if let Some((_, _, f)) = old {
+                f.set_if_changed(false);
+            }
+            if let Some((_, _, f)) = new {
+                f.set_if_changed(true);
+            }
+        });
+        self.tree.with(|t| t.mark_needs_frame());
+    }
+
+    fn move_focus(&mut self, backwards: bool) {
+        let list = self.tree.with(|t| t.focusable_nodes());
+        if list.is_empty() {
+            return;
+        }
+        let next = match self
+            .focused
+            .and_then(|f| list.iter().position(|&id| id == f))
+        {
+            None => {
+                if backwards {
+                    list[list.len() - 1]
+                } else {
+                    list[0]
+                }
+            }
+            Some(idx) => {
+                if backwards {
+                    list[(idx + list.len() - 1) % list.len()]
+                } else {
+                    list[(idx + 1) % list.len()]
+                }
+            }
+        };
+        self.set_focus(Some(next));
+    }
+
+    fn activate_node(&mut self, id: NodeId) {
+        let handler = self.tree.with(|t| {
+            t.nodes
+                .get(id)
+                .and_then(|n| n.interaction.as_ref())
+                .and_then(|i| i.on_click.clone())
+        });
+        if let Some(handler) = handler {
+            batch(|| handler());
+        }
+    }
+
+    fn handle_key_down(&mut self, key: &Key, modifiers: Modifiers, text: Option<&str>) {
+        // Tab / Shift+Tab always cycles focus.
+        if *key == Key::Tab && !modifiers.ctrl && !modifiers.alt && !modifiers.meta {
+            self.move_focus(modifiers.shift);
+            return;
+        }
+
+        let Some(focused) = self.focused else { return };
+
+        let is_text_input = self.tree.with(|t| {
+            t.nodes
+                .get(focused)
+                .is_some_and(|n| matches!(n.content, Content::TextInput(_)))
+        });
+
+        if is_text_input {
+            self.handle_text_input_key(focused, key, modifiers, text);
+            return;
+        }
+
+        // Focused button: Enter or Space activates it.
+        if matches!(key, Key::Enter | Key::Space) && modifiers.is_empty() {
+            self.activate_node(focused);
+        }
+    }
+
+    fn handle_text_input_key(
+        &mut self,
+        id: NodeId,
+        key: &Key,
+        modifiers: Modifiers,
+        text: Option<&str>,
+    ) {
+        // Handle clipboard & select-all shortcuts first (outside tree borrow when writing signals).
+        if modifiers.command() && !modifiers.alt {
+            if let Key::Character(c) = key {
+                match c.to_ascii_lowercase().as_str() {
+                    "a" => {
+                        self.tree.with(|t| {
+                            if let Some(n) = t.nodes.get_mut(id)
+                                && let Content::TextInput(s) = &mut n.content
+                            {
+                                s.select_all();
+                                t.mark_needs_frame();
+                            }
+                        });
+                        return;
+                    }
+                    "c" => {
+                        let sel = self.tree.with(|t| {
+                            t.nodes.get(id).and_then(|n| match &n.content {
+                                Content::TextInput(s) => Some(s.selected_text()),
+                                _ => None,
+                            })
+                        });
+                        if let Some(sel) = sel
+                            && !sel.is_empty()
+                        {
+                            self.clipboard.set_text(&sel);
+                        }
+                        return;
+                    }
+                    "x" => {
+                        let sel = self.tree.with(|t| {
+                            t.nodes.get(id).and_then(|n| match &n.content {
+                                Content::TextInput(s) => Some(s.selected_text()),
+                                _ => None,
+                            })
+                        });
+                        if let Some(sel) = sel
+                            && !sel.is_empty()
+                        {
+                            self.clipboard.set_text(&sel);
+                            self.mutate_text_input(id, |s| s.backspace());
+                        }
+                        return;
+                    }
+                    "v" => {
+                        if let Some(paste) = self.clipboard.get_text() {
+                            // Strip newlines for single-line input.
+                            let clean = paste.replace(['\r', '\n'], " ");
+                            self.mutate_text_input(id, |s| s.insert_text(&clean));
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if *key == Key::ArrowLeft {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_home(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+                return;
+            }
+            if *key == Key::ArrowRight {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_end(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+                return;
+            }
+        }
+
+        match key {
+            Key::Backspace => self.mutate_text_input(id, |s| s.backspace()),
+            Key::Delete => self.mutate_text_input(id, |s| s.delete_forward()),
+            Key::ArrowLeft => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_left(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+            Key::ArrowRight => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_right(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+            Key::Home => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_home(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+            Key::End => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(id)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.move_end(modifiers.shift);
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+            Key::Enter => {
+                let submit = self.tree.with(|t| {
+                    t.nodes.get(id).and_then(|n| match &n.content {
+                        Content::TextInput(s) => {
+                            s.on_submit.clone().map(|f| (f, s.value.get_untracked()))
+                        }
+                        _ => None,
+                    })
+                });
+                if let Some((f, val)) = submit {
+                    batch(|| f(val));
+                }
+            }
+            Key::Escape => self.set_focus(None),
+            Key::Space if !modifiers.ctrl && !modifiers.meta => {
+                self.mutate_text_input(id, |s| s.insert_text(" "));
+            }
+            _ => {
+                if !modifiers.ctrl && !modifiers.meta && !modifiers.alt {
+                    let insert = text.or(match key {
+                        Key::Character(s) => Some(s.as_str()),
+                        _ => None,
+                    });
+                    if let Some(s) = insert
+                        && !s.is_empty()
+                        && !s.chars().all(char::is_control)
+                    {
+                        self.mutate_text_input(id, |st| st.insert_text(s));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs a mutation on a `TextInputState` while avoiding signal writes during a tree borrow.
+    fn mutate_text_input(&mut self, id: NodeId, f: impl FnOnce(&mut crate::tree::TextInputState)) {
+        // Temporarily extract the TextInputState? No: `insert_text` writes `value` signal,
+        // which triggers effects that borrow `TreeHandle`. So we swap the state out, run `f`
+        // inside `batch`, and put it back!
+        let extracted = self.tree.with(|t| {
+            let n = t.nodes.get_mut(id)?;
+            match std::mem::replace(&mut n.content, Content::None) {
+                Content::TextInput(state) => Some(state),
+                other => {
+                    n.content = other;
+                    None
+                }
+            }
+        });
+        if let Some(mut state) = extracted {
+            batch(|| f(&mut state));
+            self.tree.with(|t| {
+                if let Some(n) = t.nodes.get_mut(id) {
+                    n.content = Content::TextInput(state);
+                    t.mark_needs_frame();
+                }
+            });
+        }
+    }
+
+    fn handle_ime(&mut self, ime: &ImeEvent) {
+        let Some(focused) = self.focused else { return };
+        match ime {
+            ImeEvent::Enabled => {}
+            ImeEvent::Preedit(text, range) => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(focused)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.preedit = if text.is_empty() {
+                            None
+                        } else {
+                            Some((text.clone(), *range))
+                        };
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+            ImeEvent::Commit(text) => {
+                self.mutate_text_input(focused, |s| {
+                    s.preedit = None;
+                    if !text.is_empty() {
+                        s.insert_text(text);
+                    }
+                });
+            }
+            ImeEvent::Disabled => {
+                self.tree.with(|t| {
+                    if let Some(n) = t.nodes.get_mut(focused)
+                        && let Content::TextInput(s) = &mut n.content
+                    {
+                        s.preedit = None;
+                        t.mark_needs_frame();
+                    }
+                });
+            }
+        }
+    }
 }
 
 impl App for Ui {
+    fn attach(&mut self, wake: WakeHandle) {
+        self.tree.with(|t| t.waker = Some(wake));
+    }
+
     fn event(&mut self, event: &InputEvent) {
-        match *event {
+        match event {
             InputEvent::PointerMove(p) => {
-                let target = self.tree.with(|t| t.hit_test(p));
+                let target = self.tree.with(|t| t.hit_test(*p));
                 self.set_hover(target);
                 // While a press is held, show the pressed look only while over the button.
                 if let Some(captured) = self.captured
-                    && let Some((_, pressed)) = self.signals(Some(captured))
+                    && let Some((_, pressed, _)) = self.signals(Some(captured))
                 {
                     pressed.set_if_changed(target == Some(captured));
                 }
             }
             InputEvent::PointerDown(p, PointerButton::Primary) => {
-                let target = self.tree.with(|t| t.hit_test(p));
+                let (target, draggable) =
+                    self.tree.with(|t| (t.hit_test(*p), t.is_draggable_at(*p)));
                 self.set_hover(target);
+                self.set_focus(target);
                 self.captured = target;
-                if let Some((_, pressed)) = self.signals(target) {
+                if let Some((_, pressed, _)) = self.signals(target) {
                     pressed.set(true);
+                } else if draggable {
+                    self.commands.push(WindowCommand::DragWindow);
                 }
             }
             InputEvent::PointerUp(p, PointerButton::Primary) => {
-                let target = self.tree.with(|t| t.hit_test(p));
+                let target = self.tree.with(|t| t.hit_test(*p));
                 let Some(captured) = self.captured.take() else {
                     return;
                 };
-                if let Some((_, pressed)) = self.signals(Some(captured)) {
+                if let Some((_, pressed, _)) = self.signals(Some(captured)) {
                     pressed.set_if_changed(false);
                 }
                 if target == Some(captured) {
-                    let handler = self.tree.with(|t| {
-                        t.nodes
-                            .get(captured)
-                            .and_then(|n| n.interaction.as_ref())
-                            .and_then(|i| i.on_click.clone())
-                    });
-                    if let Some(handler) = handler {
-                        batch(|| handler());
-                    }
+                    self.activate_node(captured);
                 }
             }
             InputEvent::PointerLeave => self.set_hover(None),
+            InputEvent::KeyDown {
+                key,
+                modifiers,
+                text,
+                ..
+            } => {
+                self.handle_key_down(key, *modifiers, text.as_deref());
+            }
+            InputEvent::Ime(ime) => self.handle_ime(ime),
+            InputEvent::Focused(false) => {
+                // Keep logical focus for when the window returns, but clear uncommitted preedit.
+                if let Some(focused) = self.focused {
+                    self.tree.with(|t| {
+                        if let Some(n) = t.nodes.get_mut(focused)
+                            && let Content::TextInput(s) = &mut n.content
+                        {
+                            s.preedit = None;
+                        }
+                    });
+                }
+            }
+            InputEvent::AppearanceChanged(appearance) => {
+                batch(|| set_appearance(*appearance));
+                let bg = theme().background;
+                if self.bg_initialized {
+                    self.background.set_target(bg);
+                } else {
+                    self.background.snap(bg);
+                }
+                self.tree.with(|t| t.mark_needs_frame());
+            }
+            InputEvent::MenuAction(id) => {
+                if let Some(handler) = self.on_menu_action.clone() {
+                    batch(|| handler(id));
+                }
+            }
             _ => {}
         }
     }
@@ -140,24 +568,92 @@ impl App for Ui {
         let dt = frame.dt.as_secs_f64().min(1.0 / 20.0);
         let resized = self.last_size != Some(frame.size);
         self.last_size = Some(frame.size);
-        painter.fill_rect(
-            rugkit_render::Rect::from_origin_size(rugkit_render::Point::ZERO, frame.size),
-            0.0,
-            crate::theme::theme().background,
+
+        let target_bg = theme().background;
+        if !self.bg_initialized {
+            self.background.snap(target_bg);
+            self.bg_initialized = true;
+        } else {
+            self.background.set_target(target_bg);
+        }
+        let bg_moving = self.background.step(
+            dt,
+            Motion::Spring(theme().color_spring),
+            frame.reduce_motion,
         );
+
+        painter.fill_rect(
+            Rect::from_origin_size(Point::ZERO, frame.size),
+            0.0,
+            self.background.value(),
+        );
+        let focused = self.focused;
         let tree = self.tree.clone();
         tree.with(|t| {
             if t.needs_layout || resized {
                 t.compute_layout(frame.size, painter);
             }
-            self.animating = t.step(dt, frame.reduce_motion);
-            t.paint(painter);
+            self.animating = t.step(dt, frame.reduce_motion) || bg_moving;
+            t.paint(painter, focused);
             t.needs_frame = false;
         });
     }
 
     fn wants_frame(&self) -> bool {
         self.animating || self.tree.with(|t| t.needs_frame)
+    }
+
+    fn ime_state(&self) -> Option<ImeState> {
+        let focused = self.focused?;
+        self.tree.with(|t| {
+            let n = t.nodes.get(focused)?;
+            match &n.content {
+                Content::TextInput(s) => Some(ImeState {
+                    enabled: true,
+                    cursor_rect: Some(s.cursor_rect),
+                }),
+                _ => None,
+            }
+        })
+    }
+
+    fn a11y_tree(&mut self) -> Option<A11yTree> {
+        let size = self.last_size.unwrap_or_default();
+        Some(self.tree.with(|t| t.a11y_tree(self.focused, size)))
+    }
+
+    fn a11y_action(&mut self, action: &A11yAction) {
+        match action {
+            A11yAction::Click(id) => {
+                let node_id = NodeId::from_a11y(*id);
+                if self.tree.with(|t| t.nodes.contains_key(node_id)) {
+                    self.set_focus(Some(node_id));
+                    self.activate_node(node_id);
+                }
+            }
+            A11yAction::Focus(id) => {
+                let node_id = NodeId::from_a11y(*id);
+                self.set_focus(Some(node_id));
+            }
+            A11yAction::Blur(id) => {
+                let node_id = NodeId::from_a11y(*id);
+                if self.focused == Some(node_id) {
+                    self.set_focus(None);
+                }
+            }
+            A11yAction::SetValue(id, value) => {
+                let node_id = NodeId::from_a11y(*id);
+                self.mutate_text_input(node_id, |s| s.set_value(value.clone()));
+            }
+            A11yAction::ReplaceSelectedText(id, value) => {
+                let node_id = NodeId::from_a11y(*id);
+                self.mutate_text_input(node_id, |s| s.insert_text(value));
+            }
+        }
+    }
+
+    fn take_commands(&mut self) -> Vec<WindowCommand> {
+        std::mem::take(&mut self.commands)
     }
 }
 
@@ -173,7 +669,7 @@ mod tests {
     use crate::{button, column, text};
     use rugkit_reactive::signal;
     use rugkit_render::{Canvas, Point};
-    use rugkit_shell::{FrameStats, InputEvent};
+    use rugkit_shell::{Appearance, FrameStats, InputEvent};
     use std::time::Duration;
 
     fn frame(size: Size, dt: f64, reduce_motion: bool) -> FrameInfo {
@@ -184,6 +680,7 @@ mod tests {
             dt: Duration::from_secs_f64(dt),
             stats: FrameStats::default(),
             reduce_motion,
+            appearance: Appearance::default(),
         }
     }
 

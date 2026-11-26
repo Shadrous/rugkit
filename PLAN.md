@@ -149,11 +149,24 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
   - Tests: 16 reactive (incl. diamond, dynamic deps, disposal), 7 spring maths (analytic vs integrated, frame-rate independence, retargeting), 3 headless `Ui` interaction tests (hover/press/click, drag-off cancel, layout spring, Reduce Motion snap) and 3 layout tests.
   - Counter demo while animating, on the base M1 at 1438×1333 physical: 5.2ms average frame, 6.5ms worst. That's within the 8ms budget.
   - Known gaps carried forward:
-    - There's no way yet to wake the UI when a signal changes outside an input event (timers, async). This is needed for `resource()`.
+    - ~~There's no way yet to wake the UI when a signal changes outside an input event (timers, async).~~ Fixed in M2 via `WakeHandle`.
     - Children are static: no dynamic or keyed lists yet.
     - Hit-testing ignores scale/lift transforms.
-    - The theme is a fixed constant (reactive tokens are M3).
-- M2–M6: not started.
+    - ~~The theme is a fixed constant (reactive tokens are M3).~~ System light/dark + accent are now reactive in M2; full subtree token overrides arrive in M3.
+- **M2: Platform plumbing.** Done (2026-11-26).
+  - `rugkit-shell`:
+    - `WakeHandle` (`EventLoopProxy`) so reactive effects, timers and async tasks wake an idle window.
+    - Keyboard (`Key`, `Modifiers`), `ImeEvent` + `ImeState` cursor area sync, window focus, `Appearance` (light/dark + macOS `NSColor::controlAccentColor`), `WindowCommand::DragWindow` + macOS transparent fullsize titlebar, `clipboard` (`arboard`), native `MenuBar` (`muda`), and `A11yTree` / `A11yAction` bridged to `accesskit` + `accesskit_winit` (zero external types in public API).
+  - `rugkit-render`: rounded `Painter::with_clip`, `text_x_for_byte` and `text_byte_for_x`.
+  - `rugkit-reactive`: `Owner::root()` for thread-global signals (like system appearance).
+  - `rugkit-widgets`:
+    - Reactive `Theme::PLAYFUL_LIGHT` / `Theme::PLAYFUL_DARK` + system accent colour, animated on OS appearance change.
+    - Keyboard focus traversal (`Tab` / `Shift+Tab`), animated focus rings, `Enter` / `Space` button activation, `.a11y_label(...)` and `.draggable()` modifiers.
+    - `TextInput` (`text_input(signal)`) with SF Pro, caret/selection rendering, clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), CJK IME preedit/commit + cursor rect reporting, and AccessKit `SetValue`/`ReplaceSelectedText`.
+    - Public headless `Harness` that queries widgets by `Role` or label via `A11yTree` and drives pointer, keyboard, IME, AccessKit (VoiceOver), menu, appearance and isolated clipboard tests.
+  - Counter demo updated with transparent titlebar, draggable header, native menu bar (`⌘=`/`⌘-`/`⌘0`), reactive dark/light + accent theme, and a `TextInput` note field. Measured on the base M1 while animating: ~0.62ms CPU, ~5.7ms average GPU (within the 8ms budget).
+  - Tests: 17 reactive, 3 layout, 2 render, 14 widgets (including 4 new M2 headless harness tests covering VoiceOver/keyboard counter operation, CJK IME + clipboard in `TextInput`, animated appearance switching, and draggable titlebar + menu actions) + 16 doctests.
+- M3–M6: not started.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.

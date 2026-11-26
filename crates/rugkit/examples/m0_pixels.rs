@@ -310,6 +310,7 @@ fn main() -> Result<(), rugkit::Error> {
             size: Size::new(1180.0, 760.0),
             background: Color::from_hex(0xFFF1E0),
             measure_gpu: true,
+            ..WindowOptions::default()
         },
         demo,
     )

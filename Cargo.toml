@@ -25,7 +25,11 @@ pollster = "1.0"
 log = "0.4"
 slotmap = "1.1"
 taffy = { version = "0.16", default-features = false, features = ["std", "taffy_tree", "flexbox", "content_size"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility", "NSColor", "NSColorSpace"] }
+accesskit = "0.25"
+accesskit_winit = "0.34"
+muda = "0.22"
+arboard = { version = "3.7", default-features = false }
 
 [workspace.lints.rust]
 missing_docs = "deny"

@@ -31,7 +31,7 @@
 //! For full control over drawing, implement [`App`] and use the [`Painter`] directly via
 //! [`run`].
 //!
-//! **Status: M1.** See `PLAN.md` in the repository for the roadmap.
+//! **Status: M2.** See `PLAN.md` in the repository for the roadmap.
 
 pub use rugkit_reactive::{
     Effect, Memo, Owner, Signal, batch, effect, memo, on_cleanup, signal, untrack,
@@ -41,11 +41,14 @@ pub use rugkit_render::{
     Vec2,
 };
 pub use rugkit_shell::{
-    App, Error, FrameInfo, FrameStats, InputEvent, PointerButton, WindowOptions, run,
+    A11yAction, A11yId, A11yNode, A11yTree, App, Appearance, ColorScheme, Error, FrameInfo,
+    FrameStats, ImeEvent, ImeState, InputEvent, Key, MenuBar, MenuEntry, MenuItem, Modifiers,
+    PointerButton, Role, Shortcut, StandardMenuItem, Submenu, WakeHandle, WindowCommand,
+    WindowOptions, clipboard, run,
 };
 pub use rugkit_widgets::{
-    Align, AnyView, Button, Children, Insets, IntoProp, Justify, Prop, Spring, Stack, Text, Theme,
-    Ui, View, button, column, row, text, theme,
+    Align, AnyView, Button, Children, Harness, Insets, IntoProp, Justify, Prop, Spring, Stack,
+    Text, TextInput, Theme, Ui, View, button, column, row, set_appearance, text, text_input, theme,
 };
 
 /// Opens a window showing the view returned by `view`, centred, and runs until it's closed.
@@ -58,8 +61,9 @@ pub fn launch<V: View>(options: WindowOptions, view: impl FnOnce() -> V) -> Resu
 /// Everything most apps need, in one import: `use rugkit::prelude::*;`.
 pub mod prelude {
     pub use crate::{
-        Align, App, Brush, Color, FontFamily, FontWeight, FrameInfo, FrameStats, Insets, Justify,
-        Painter, Point, Rect, Shadow, Signal, Size, Spring, TextStyle, Vec2, View, WindowOptions,
-        batch, button, column, effect, memo, row, signal, text, theme,
+        Align, App, Appearance, Brush, Color, ColorScheme, FontFamily, FontWeight, FrameInfo,
+        FrameStats, Insets, Justify, Key, MenuBar, MenuItem, Modifiers, Painter, Point, Rect, Role,
+        Shadow, Shortcut, Signal, Size, Spring, StandardMenuItem, Submenu, TextStyle, Vec2, View,
+        WindowOptions, batch, button, column, effect, memo, row, signal, text, text_input, theme,
     };
 }

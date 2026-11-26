@@ -464,6 +464,10 @@ pub(crate) fn current_owner() -> OwnerId {
     with_rt(|rt| rt.current_owner)
 }
 
+pub(crate) fn root_owner() -> OwnerId {
+    with_rt(|rt| rt.root)
+}
+
 pub(crate) fn run_in_owner<R>(owner: OwnerId, f: impl FnOnce() -> R) -> R {
     let prev = with_rt(|rt| std::mem::replace(&mut rt.current_owner, owner));
     let out = f();

@@ -19,9 +19,11 @@ pub(crate) struct Common {
     pub background: Option<Prop<Color>>,
     pub radius: Option<Prop<f64>>,
     pub elevation: Option<Prop<f64>>,
-    pub shadow_tint: Option<Color>,
+    pub shadow_tint: Option<Prop<Color>>,
     pub scale: Option<Prop<f64>>,
     pub motion: Option<Motion>,
+    pub a11y_label: Option<String>,
+    pub draggable: bool,
 }
 
 impl Common {
@@ -32,7 +34,15 @@ impl Common {
             cx.with_tree(|t| t.nodes[id].visual.motion = motion);
         }
         if let Some(tint) = self.shadow_tint {
-            cx.with_tree(|t| t.nodes[id].visual.shadow_tint = tint);
+            cx.bind(id, tint, |t, id, v| {
+                t.nodes[id].visual.shadow_tint = v;
+            });
+        }
+        if let Some(label) = self.a11y_label {
+            cx.with_tree(|t| t.nodes[id].a11y_label = Some(label));
+        }
+        if self.draggable {
+            cx.with_tree(|t| t.nodes[id].draggable = true);
         }
         if self.fill_width || self.grow.is_some() || self.padding.is_some() {
             cx.with_tree(|t| {
@@ -143,9 +153,12 @@ macro_rules! common_modifiers {
                 self
             }
 
-            /// Colour the ambient part of the shadow is tinted with.
-            pub fn shadow_tint(mut self, tint: rugkit_render::Color) -> Self {
-                self.common.shadow_tint = Some(tint);
+            /// Colour the ambient part of the shadow is tinted with (static or reactive).
+            pub fn shadow_tint(
+                mut self,
+                tint: impl $crate::IntoProp<rugkit_render::Color>,
+            ) -> Self {
+                self.common.shadow_tint = Some(tint.into_prop());
                 self
             }
 
@@ -164,6 +177,19 @@ macro_rules! common_modifiers {
             /// Turns implicit animation off: changes apply instantly.
             pub fn no_animation(mut self) -> Self {
                 self.common.motion = Some($crate::motion::Motion::Instant);
+                self
+            }
+
+            /// Explicit accessible label for screen readers (VoiceOver) and the test harness.
+            pub fn a11y_label(mut self, label: impl Into<String>) -> Self {
+                self.common.a11y_label = Some(label.into());
+                self
+            }
+
+            /// Marks this region as draggable so pressing on it moves the window (for custom
+            /// transparent titlebars). Interactive children inside still receive clicks.
+            pub fn draggable(mut self) -> Self {
+                self.common.draggable = true;
                 self
             }
         }

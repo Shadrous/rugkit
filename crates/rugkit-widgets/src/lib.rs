@@ -19,6 +19,7 @@
 //! [`Ui`] hosts a tree in a window. Most apps go through the `rugkit` facade's `launch`.
 
 mod common;
+mod harness;
 pub mod motion;
 mod prop;
 mod theme;
@@ -27,11 +28,13 @@ mod ui;
 mod view;
 mod widgets;
 
+pub use harness::Harness;
 pub use motion::{Animatable, Animated, Motion, Spring};
 pub use prop::{IntoProp, Prop};
 pub use rugkit_layout::{Align, Insets, Justify};
-pub use theme::{Theme, theme};
+pub use rugkit_shell::{A11yAction, A11yId, A11yNode, A11yTree, Role};
+pub use theme::{Theme, set_appearance, theme};
 pub use tree::NodeId;
 pub use ui::Ui;
 pub use view::{AnyView, BuildCx, Children, View};
-pub use widgets::{Button, Stack, Text, button, column, row, text};
+pub use widgets::{Button, Stack, Text, TextInput, button, column, row, text, text_input};

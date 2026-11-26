@@ -1,6 +1,12 @@
-//! M1 demo: a counter where every state change springs. The number card resizes, the
-//! progress bar stretches, colours shift with the sign, and buttons lift on hover and squash
-//! when pressed. Click fast to see animations interrupt smoothly.
+//! Counter demo: signals, layout, implicit springs and M2 platform plumbing.
+//!
+//! Every state change springs (the number card resizes, the progress bar stretches, colours shift
+//! with the sign, buttons lift on hover and squash when pressed). Supports:
+//! - Tab / Shift+Tab focus rings and Enter / Space activation
+//! - VoiceOver accessibility via AccessKit
+//! - CJK IME composition and clipboard shortcuts in the note field
+//! - Transparent macOS titlebar with draggable header and native menu bar (⌘= / ⌘- / ⌘0)
+//! - System light/dark appearance and macOS accent colour, animated on change
 //!
 //! ```bash
 //! cargo run --release --example counter
@@ -14,21 +20,23 @@
 use std::time::Duration;
 
 use rugkit::prelude::*;
-use rugkit::{InputEvent, Ui};
+use rugkit::{A11yAction, A11yTree, ImeState, InputEvent, Ui, WakeHandle, WindowCommand};
 
 const MAX_STEPS: i32 = 10;
 const TRACK: f64 = 320.0;
 
-fn counter(count: Signal<i32>) -> impl View {
-    let t = theme();
-    let tone = move || match count.get() {
-        0 => t.ink,
-        c if c > 0 => t.accent,
-        _ => t.negative,
+fn counter(count: Signal<i32>, note: Signal<String>) -> impl View {
+    let tone = move || {
+        let t = theme();
+        match count.get() {
+            0 => t.ink,
+            c if c > 0 => t.accent,
+            _ => t.negative,
+        }
     };
     let caption = move || {
         match count.get() {
-            0 => "Tap + to start",
+            0 => "Tap + or press Tab & Space",
             1..=3 => "Nice, keep going",
             4..=9 => "On a roll!",
             c if c >= 10 => "Maxed out 🎉",
@@ -38,17 +46,22 @@ fn counter(count: Signal<i32>) -> impl View {
     };
 
     column((
-        text("rugkit counter")
-            .size(20.0)
+        // Draggable header under the transparent macOS titlebar.
+        row((text("rugkit counter")
+            .size(18.0)
             .weight(FontWeight::SEMIBOLD)
-            .color(t.ink_soft),
+            .color(|| theme().ink_soft),))
+        .fill_width()
+        .height(36.0)
+        .justify(Justify::Center)
+        .draggable(),
         column((
             text(move || count.get().to_string())
                 .size(112.0)
                 .weight(FontWeight::BLACK)
                 .letter_spacing(-3.0)
                 .color(tone),
-            text(caption).size(17.0).color(t.ink_soft),
+            text(caption).size(17.0).color(|| theme().ink_soft),
             // Progress track with a bar whose width (and colour) spring with the count.
             row((column(())
                 .height(14.0)
@@ -59,7 +72,7 @@ fn counter(count: Signal<i32>) -> impl View {
                 })
                 .background(move || {
                     if count.get() == 0 {
-                        t.ink.with_alpha(0.12)
+                        theme().ink.with_alpha(0.12)
                     } else {
                         tone()
                     }
@@ -67,25 +80,32 @@ fn counter(count: Signal<i32>) -> impl View {
             .width(TRACK)
             .height(14.0)
             .radius(7.0)
-            .background(t.ink.with_alpha(0.06))
+            .background(|| theme().ink.with_alpha(0.06))
             .justify(Justify::Start),
             row((
                 button("−")
                     .secondary()
+                    .a11y_label("Decrement")
                     .on_click(move || count.update(|c| *c = (*c - 1).max(-MAX_STEPS))),
                 button("Reset").secondary().on_click(move || count.set(0)),
-                button("+").on_click(move || count.update(|c| *c = (*c + 1).min(MAX_STEPS))),
+                button("+")
+                    .a11y_label("Increment")
+                    .on_click(move || count.update(|c| *c = (*c + 1).min(MAX_STEPS))),
             ))
             .gap(14.0),
+            text_input(note)
+                .placeholder("Add a note (try CJK IME or ⌘C / ⌘V)…")
+                .width(TRACK),
         ))
         .gap(22.0)
         .padding((36.0, 48.0))
-        .background(t.surface)
+        .background(|| theme().surface)
         .radius(40.0)
         .elevation(move || if count.get() == 0 { 6.0 } else { 12.0 })
-        .shadow_tint(t.accent),
+        .shadow_tint(|| theme().accent),
     ))
-    .gap(28.0)
+    .gap(20.0)
+    .padding((12.0, 24.0))
 }
 
 /// Wraps the UI to print frame stats and drive the optional autoplay.
@@ -101,6 +121,10 @@ struct Demo {
 }
 
 impl App for Demo {
+    fn attach(&mut self, wake: WakeHandle) {
+        self.ui.attach(wake);
+    }
+
     fn draw(&mut self, p: &mut Painter<'_>, frame: &FrameInfo) {
         if self.autoplay && frame.time >= self.next_step {
             // Up to 6, back down to -3, reset: exercises growth, sign changes and interrupts.
@@ -136,11 +160,42 @@ impl App for Demo {
     fn wants_frame(&self) -> bool {
         self.autoplay || self.exit_after.is_some() || self.ui.wants_frame()
     }
+
+    fn ime_state(&self) -> Option<ImeState> {
+        self.ui.ime_state()
+    }
+
+    fn a11y_tree(&mut self) -> Option<A11yTree> {
+        self.ui.a11y_tree()
+    }
+
+    fn a11y_action(&mut self, action: &A11yAction) {
+        self.ui.a11y_action(action);
+    }
+
+    fn take_commands(&mut self) -> Vec<WindowCommand> {
+        self.ui.take_commands()
+    }
 }
 
 fn main() -> Result<(), rugkit::Error> {
     let count = signal(0);
-    let ui = Ui::new(move || counter(count));
+    let note = signal(String::new());
+    let ui = Ui::new(move || counter(count, note)).on_menu_action(move |id| match id {
+        "counter.inc" => count.update(|c| *c = (*c + 1).min(MAX_STEPS)),
+        "counter.dec" => count.update(|c| *c = (*c - 1).max(-MAX_STEPS)),
+        "counter.reset" => count.set(0),
+        _ => {}
+    });
+
+    let menu_bar = MenuBar::standard_app("rugkit").submenu(
+        Submenu::new("Counter")
+            .item(MenuItem::new("counter.inc", "Increment").shortcut(Shortcut::cmd("+")))
+            .item(MenuItem::new("counter.dec", "Decrement").shortcut(Shortcut::cmd("-")))
+            .separator()
+            .item(MenuItem::new("counter.reset", "Reset").shortcut(Shortcut::cmd("0"))),
+    );
+
     let demo = Demo {
         ui,
         count,
@@ -157,9 +212,11 @@ fn main() -> Result<(), rugkit::Error> {
     rugkit::run(
         WindowOptions {
             title: "rugkit · counter".into(),
-            size: Size::new(720.0, 640.0),
+            size: Size::new(720.0, 680.0),
             background: theme().background,
             measure_gpu: std::env::var_os("M1_PRINT_STATS").is_some(),
+            transparent_titlebar: true,
+            menu_bar: Some(menu_bar),
         },
         demo,
     )

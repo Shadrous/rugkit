@@ -233,3 +233,12 @@ fn set_if_changed_skips_equal_values() {
     s.set_if_changed(2);
     assert_eq!(runs.get(), 2);
 }
+
+#[test]
+fn root_owner_survives_child_disposal() {
+    let child = Owner::new();
+    let root_sig = child.run(|| Owner::root().run(|| signal(42)));
+    child.dispose();
+    assert!(root_sig.is_alive());
+    assert_eq!(root_sig.get(), 42);
+}

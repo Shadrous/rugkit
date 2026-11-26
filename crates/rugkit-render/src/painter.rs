@@ -56,6 +56,16 @@ impl Painter<'_> {
         out
     }
 
+    /// Clips everything drawn inside `f` to `rect` rounded by `radius`.
+    pub fn with_clip<R>(&mut self, rect: Rect, radius: f64, f: impl FnOnce(&mut Self) -> R) -> R {
+        let shape = rounded(rect, radius);
+        self.scene
+            .push_clip_layer(Fill::NonZero, self.transform(), &shape);
+        let out = f(self);
+        self.scene.pop_layer();
+        out
+    }
+
     /// Fills a rectangle whose corners are rounded by `radius` (clamped to half the shorter side).
     pub fn fill_rect(&mut self, rect: Rect, radius: f64, brush: impl Into<Brush>) {
         let shape = rounded(rect, radius);
@@ -123,6 +133,41 @@ impl Painter<'_> {
         layout_size(layout, scale)
     }
 
+    /// Returns the horizontal offset in logical pixels of the UTF-8 byte index `byte_index`
+    /// in a single line of `text`.
+    ///
+    /// If `byte_index` is past the end or falls inside a multi-byte character, it is clamped
+    /// to the nearest valid character boundary.
+    pub fn text_x_for_byte(&mut self, text: &str, byte_index: usize, style: &TextStyle) -> f64 {
+        let clamped = clamp_char_boundary(text, byte_index);
+        if clamped == 0 {
+            return 0.0;
+        }
+        self.measure_text(&text[..clamped], None, style).width
+    }
+
+    /// Returns the UTF-8 character boundary in `text` whose horizontal offset is closest to
+    /// `x` logical pixels from the start of the line.
+    pub fn text_byte_for_x(&mut self, text: &str, x: f64, style: &TextStyle) -> usize {
+        if x <= 0.0 || text.is_empty() {
+            return 0;
+        }
+        let mut best_idx = 0;
+        let mut best_dist = x.abs();
+        for (idx, ch) in text.char_indices() {
+            let end = idx + ch.len_utf8();
+            let w = self.measure_text(&text[..end], None, style).width;
+            let dist = (w - x).abs();
+            if dist <= best_dist {
+                best_dist = dist;
+                best_idx = end;
+            } else if w > x {
+                break;
+            }
+        }
+        best_idx
+    }
+
     fn draw_text(
         &mut self,
         text: &str,
@@ -172,6 +217,14 @@ impl Painter<'_> {
         }
         layout_size(layout, scale)
     }
+}
+
+fn clamp_char_boundary(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 fn layout_size(layout: &parley::Layout<()>, scale: f64) -> Size {

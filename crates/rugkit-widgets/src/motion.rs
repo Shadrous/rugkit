@@ -215,9 +215,9 @@ impl<T: Animatable> Animated<T> {
         };
         let target = self.target.to_components();
         let mut settled = true;
-        for i in 0..4 {
-            let (x, v) = spring.step(self.current[i] - target[i], self.velocity[i], dt);
-            self.current[i] = target[i] + x;
+        for (i, &t) in target.iter().enumerate() {
+            let (x, v) = spring.step(self.current[i] - t, self.velocity[i], dt);
+            self.current[i] = t + x;
             self.velocity[i] = v;
             if x.abs() > T::EPSILON || v.abs() > T::EPSILON * 10.0 {
                 settled = false;

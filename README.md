@@ -4,20 +4,21 @@
 
 rugkit is a Rust GUI framework built around visual polish and motion: a bold, playful design language, implicit spring animations, soft layered shadows and crisp text out of the box.
 
-> **Status: early development, M1 (signals, layout, springs).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
+> **Status: early development, M2 (platform plumbing).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
 
-![The M1 counter demo: a card with a big number, a progress bar and pill buttons](docs/screenshots/m1_counter.png)
+![The counter demo: a card with a big number, a progress bar, pill buttons and a text input under a transparent titlebar](docs/screenshots/m2_counter.png)
 
 ## What works today
-- A window with a GPU-rendered frame loop (winit + wgpu/Metal + vello)
-- `Painter`: rounded rectangles, circles, strokes, linear gradients, gaussian soft shadows
+- A window with a GPU-rendered frame loop (winit + wgpu/Metal + vello) and transparent macOS titlebar with draggable regions
+- `Painter`: rounded rectangles, circles, strokes, linear gradients, gaussian soft shadows, rounded clipping
 - Text shaped by parley: SF Pro Rounded for UI text and SF Pro for dense text, both loaded from macOS (never bundled), with variable font weights
 - Live `FrameStats` (fps, CPU time, GPU time, worst frame)
-- **Signals:** Copy `signal`, `memo` and `effect` handles with owners and batching. Updates are glitch-free and fine-grained, with no diffing.
-- **Views as builder chains:** `text`, `button`, `row` and `column`, built once into a retained tree. Every setter takes a value or a closure that reads signals.
+- **Signals:** Copy `signal`, `memo` and `effect` handles with owners and batching. Updates are glitch-free and fine-grained, with no diffing, and automatically wake an idle window via `WakeHandle`.
+- **Views as builder chains:** `text`, `button`, `text_input`, `row` and `column`, built once into a retained tree. Every setter takes a value or a closure that reads signals.
 - **Flexbox layout** via taffy, hidden behind rugkit's own types
-- **Implicit springs:** size, position, colour, elevation, scale and lift all animate, and interrupting an animation keeps its velocity. The macOS "Reduce motion" setting is respected.
-- **Buttons** that lift on hover and squash on press, with tinted soft shadows
+- **Implicit springs:** size, position, colour, elevation, scale, lift and focus rings all animate, and interrupting an animation keeps its velocity. The macOS "Reduce motion" setting is respected.
+- **System appearance:** follows macOS Light/Dark mode and system accent colour, animated on change.
+- **Platform integration:** Tab / Shift+Tab focus traversal with animated focus rings, `TextInput` with CJK IME composition & clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), VoiceOver accessibility via AccessKit, native macOS menu bars, and a headless `Harness` test API.
 - **On-demand frames:** an idle window draws nothing
 
 ## Try it
