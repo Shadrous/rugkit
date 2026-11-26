@@ -696,8 +696,7 @@ fn finance_view(
 
     // ---- Budgets & Add Transaction Panel ----
     let mut budget_rows: Vec<AnyView> = Vec::new();
-    for idx in 0..5 {
-        let cat_name = CATEGORIES[idx];
+    for (idx, &cat_name) in CATEGORIES.iter().enumerate().take(5) {
         let limit_sig =
             signal(budgets.with_untracked(|b| b.get(idx).map_or(500.0, |x| x.limit_dollars)));
         effect(move || {
