@@ -13,12 +13,17 @@ publish.workspace = true
 [features]
 default = ["icons"]
 icons = ["rugkit-widgets/icons"]
+hot-reload = ["rugkit-widgets/hot-reload"]
 
 [dependencies]
 rugkit-render.workspace = true
 rugkit-shell.workspace = true
 rugkit-reactive.workspace = true
 rugkit-widgets.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -377,6 +377,15 @@ impl Tree {
         }
     }
 
+    /// Removes all nodes and resets layout (preserving the attached `waker`), used on hot-reload.
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.layout = LayoutTree::new();
+        self.root = None;
+        self.needs_layout = true;
+        self.needs_frame = true;
+    }
+
     pub fn add(&mut self, style: LayoutStyle, content: Content) -> NodeId {
         let measured = matches!(content, Content::Text { .. } | Content::TextInput(_));
         self.nodes.insert_with_key(|id| {

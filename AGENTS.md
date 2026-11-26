@@ -53,14 +53,13 @@ crates/
   rugkit-render/           Painter API, geometry, colour, Transform, Path, ImageData, clipping, opacity, offscreen renderer, text (+ layout cache & cursor hit-testing); vello + parley inside
   rugkit-widgets/          retained view tree, implicit springs (motion), typed reactive light/dark theme + subtree overrides, core widget set, virtualised `Table`, reactive `Canvas`, Lucide icons, `⌘⌥I` inspector, offscreen snapshots, `Ui`, headless `Harness`
   rugkit-shell/            window & multi-window (`run_windows`), GPU surface, input/keyboard/scroll/IME events, AccessKit bridge, native menus (muda), clipboard (arboard), transparent titlebar, system appearance, Reduce Motion, WakeHandle; platform code lives here
+  rugkit-cli/              `cargo-rugkit` binary (`cargo rugkit dev` on `subsecond` + `notify` watcher fallback)
 .github/workflows/ci.yml   fmt, clippy, tests, docs on a macOS runner
 docs/screenshots/          images used by README (window-only captures)
 PLAN.md                    product decisions, scope, milestones, status
 ```
 
-Dependency direction: `rugkit` → `rugkit-widgets` → (`rugkit-reactive`, `rugkit-layout`, `rugkit-render`, `rugkit-shell`); `rugkit-shell` → `rugkit-render`. The reactive, layout and render crates don't depend on each other.
-
-Planned crates (create them only when their milestone arrives): `rugkit-cli` / `cargo-rugkit` (M5).
+Dependency direction: `rugkit` → `rugkit-widgets` → (`rugkit-reactive`, `rugkit-layout`, `rugkit-render`, `rugkit-shell`); `rugkit-shell` → `rugkit-render`; `rugkit-cli` is standalone. The reactive, layout and render crates don't depend on each other.
 
 ## How the UI works (keep this accurate)
 - Views are built **once** (`View::build`). Reactive props are closures. `BuildCx::bind` wraps each one in an `effect` that writes the new value onto its node and wakes the shell event loop via `WakeHandle`.

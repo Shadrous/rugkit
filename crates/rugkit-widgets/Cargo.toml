@@ -12,6 +12,7 @@ publish.workspace = true
 [features]
 default = ["icons"]
 icons = []
+hot-reload = ["dep:subsecond"]
 
 [dependencies]
 rugkit-reactive.workspace = true
@@ -19,6 +20,8 @@ rugkit-render.workspace = true
 rugkit-layout.workspace = true
 rugkit-shell.workspace = true
 slotmap.workspace = true
+pollster.workspace = true
+subsecond = { workspace = true, optional = true }
 
 [lints]
 workspace = true

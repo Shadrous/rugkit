@@ -2,6 +2,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rugkit_layout::{Align, Justify, LayoutStyle, Length};
 use rugkit_reactive::{Owner, Signal, batch};
@@ -11,6 +13,7 @@ use rugkit_shell::{
     PointerButton, WakeHandle, WindowCommand, WindowSpec,
 };
 
+use crate::async_rt;
 use crate::controls::paint_tooltip;
 use crate::inspector::Inspector;
 use crate::motion::{Animated, Motion};
@@ -49,6 +52,7 @@ impl Clipboard {
 }
 
 type MenuHandler = Rc<dyn Fn(&str)>;
+type RebuildFn = Box<dyn FnMut(&mut BuildCx) -> NodeId>;
 
 /// A view tree hosted in a window. Implements [`App`], so it can be passed to
 /// `rugkit_shell::run` (the `rugkit` facade's `launch` does this for you).
@@ -56,7 +60,14 @@ type MenuHandler = Rc<dyn Fn(&str)>;
 /// Frames are drawn only while something changes or animates. An idle window costs nothing.
 pub struct Ui {
     pub(crate) tree: TreeHandle,
-    owner: Owner,
+    /// Long-lived owner for application signal state (preserved across hot-reloads).
+    state_owner: Owner,
+    /// View-scoped owner disposed and recreated when a hot-reload patch arrives.
+    view_owner: Owner,
+    /// Optional reloadable view builder (for `cargo rugkit dev` hot-reload).
+    rebuilder: Option<RebuildFn>,
+    /// Set to `true` by the `subsecond` patch handler when a hot-patch lands.
+    reload_pending: Arc<AtomicBool>,
     hovered: Option<NodeId>,
     captured: Option<NodeId>,
     focused: Option<NodeId>,
@@ -86,27 +97,16 @@ impl Ui {
     /// Builds the view returned by `view` (centred in the window) under a fresh reactive owner.
     pub fn new<V: View>(view: impl FnOnce() -> V) -> Self {
         let tree = TreeHandle::new();
-        let owner = Owner::new();
-        let root = owner.run(|| {
-            let mut cx = BuildCx::new(tree.clone());
-            let content = view().build(&mut cx);
-            let root = cx.node(
-                LayoutStyle {
-                    width: Length::Fraction(1.0),
-                    height: Length::Fraction(1.0),
-                    align: Align::Center,
-                    justify: Justify::Center,
-                    ..Default::default()
-                },
-                Content::None,
-            );
-            cx.set_children(root, vec![content]);
-            root
-        });
+        let state_owner = Owner::new();
+        let view_owner = state_owner.run(Owner::new);
+        let root = view_owner.run(|| build_rooted(&tree, |cx| view().build(cx)));
         tree.with(|t| t.root = Some(root));
         Self {
             tree,
-            owner,
+            state_owner,
+            view_owner,
+            rebuilder: None,
+            reload_pending: Arc::new(AtomicBool::new(false)),
             hovered: None,
             captured: None,
             focused: None,
@@ -123,6 +123,86 @@ impl Ui {
             inspector: Inspector::default(),
             inspector_allowed: cfg!(debug_assertions),
         }
+    }
+
+    /// Builds a hot-reloadable [`Ui`] whose signal state is created once by `init_state` and
+    /// preserved across view rebuilds whenever a `subsecond` patch arrives (or [`Self::reload_view`]
+    /// is called).
+    pub fn new_reloadable<S, V>(
+        init_state: impl FnOnce() -> S,
+        mut build_view: impl FnMut(&S) -> V + 'static,
+    ) -> Self
+    where
+        S: 'static,
+        V: View,
+    {
+        let tree = TreeHandle::new();
+        let state_owner = Owner::new();
+        let state = state_owner.run(init_state);
+        let mut rebuilder: RebuildFn = Box::new(move |cx| {
+            #[cfg(feature = "hot-reload")]
+            let view = subsecond::call(|| build_view(&state));
+            #[cfg(not(feature = "hot-reload"))]
+            let view = build_view(&state);
+            view.build(cx)
+        });
+        let view_owner = state_owner.run(Owner::new);
+        let root = view_owner.run(|| build_rooted(&tree, |cx| rebuilder(cx)));
+        tree.with(|t| t.root = Some(root));
+
+        let reload_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(feature = "hot-reload")]
+        {
+            let flag = reload_pending.clone();
+            subsecond::register_handler(Arc::new(move || {
+                flag.store(true, Ordering::SeqCst);
+            }));
+        }
+
+        Self {
+            tree,
+            state_owner,
+            view_owner,
+            rebuilder: Some(rebuilder),
+            reload_pending,
+            hovered: None,
+            captured: None,
+            focused: None,
+            pointer_pos: None,
+            modifiers: Modifiers::default(),
+            animating: false,
+            last_size: None,
+            background: Animated::new(theme().background),
+            bg_initialized: false,
+            commands: Vec::new(),
+            new_windows: Vec::new(),
+            clipboard: Clipboard::System,
+            on_menu_action: None,
+            inspector: Inspector::default(),
+            inspector_allowed: cfg!(debug_assertions),
+        }
+    }
+
+    /// Rebuilds the view tree (if created with [`Self::new_reloadable`]) while preserving all
+    /// signal state created in `init_state`.
+    pub fn reload_view(&mut self) -> bool {
+        let Some(rebuilder) = self.rebuilder.as_mut() else {
+            return false;
+        };
+        self.hovered = None;
+        self.captured = None;
+        self.focused = None;
+        self.view_owner.dispose();
+        self.tree.with(|t| t.clear());
+        let new_owner = self.state_owner.run(Owner::new);
+        let tree = self.tree.clone();
+        let root = new_owner.run(|| build_rooted(&tree, |cx| rebuilder(cx)));
+        self.view_owner = new_owner;
+        self.tree.with(|t| {
+            t.root = Some(root);
+            t.mark_needs_frame();
+        });
+        true
     }
 
     /// Enables or disables the `⌘⌥I` in-app inspector (enabled by default in debug builds).
@@ -553,8 +633,35 @@ impl Ui {
     }
 }
 
+fn build_rooted(tree: &TreeHandle, build_content: impl FnOnce(&mut BuildCx) -> NodeId) -> NodeId {
+    let mut cx = BuildCx::new(tree.clone());
+    let content = build_content(&mut cx);
+    let root = cx.node(
+        LayoutStyle {
+            width: Length::Fraction(1.0),
+            height: Length::Fraction(1.0),
+            align: Align::Center,
+            justify: Justify::Center,
+            ..Default::default()
+        },
+        Content::None,
+    );
+    cx.set_children(root, vec![content]);
+    root
+}
+
 impl App for Ui {
     fn attach(&mut self, wake: WakeHandle) {
+        async_rt::register_waker(wake.clone());
+        #[cfg(feature = "hot-reload")]
+        {
+            let flag = self.reload_pending.clone();
+            let wake_cb = wake.clone();
+            subsecond::register_handler(Arc::new(move || {
+                flag.store(true, Ordering::SeqCst);
+                wake_cb.wake();
+            }));
+        }
         self.tree.with(|t| t.waker = Some(wake));
     }
 
@@ -704,6 +811,10 @@ impl App for Ui {
     }
 
     fn draw(&mut self, painter: &mut Painter<'_>, frame: &FrameInfo) {
+        async_rt::drain_deliveries();
+        if self.reload_pending.swap(false, Ordering::SeqCst) {
+            self.reload_view();
+        }
         // Clamp so a hitch can't fling springs across the screen; apply inspector slow-mo.
         let dt = frame.dt.as_secs_f64().min(1.0 / 20.0) * self.inspector.time_scale;
         let resized = self.last_size != Some(frame.size);
@@ -810,7 +921,8 @@ impl App for Ui {
 
 impl Drop for Ui {
     fn drop(&mut self) {
-        self.owner.dispose();
+        self.view_owner.dispose();
+        self.state_owner.dispose();
     }
 }
 

@@ -302,6 +302,14 @@ impl Harness {
         self.ui.inspector_open()
     }
 
+    /// Triggers a hot-reload view rebuild (when the `Ui` was created with `Ui::new_reloadable`),
+    /// preserving all signal state.
+    pub fn reload_view(&mut self) -> bool {
+        let ok = self.ui.reload_view();
+        self.step(1.0 / 120.0);
+        ok
+    }
+
     /// Renders the latest frame offscreen via `renderer` and returns `(width, height, rgba8)`.
     pub fn render_offscreen(
         &mut self,
@@ -722,5 +730,56 @@ mod tests {
         // Scroll 100k table down without panicking or stalling.
         h.scroll(b.center(), Vec2::new(0.0, -5000.0));
         assert!(h.settle() < 200);
+    }
+
+    #[test]
+    fn hot_reload_rebuilds_view_while_keeping_signal_state() {
+        let generation = Rc::new(RefCell::new(1usize));
+        let gen_in_view = generation.clone();
+        let ui = Ui::new_reloadable(
+            || signal(0i32),
+            move |&count| {
+                let g = *gen_in_view.borrow();
+                column((
+                    text(move || format!("v{g}: {}", count.get())),
+                    button("+").on_click(move || count.update(|c| *c += 1)),
+                ))
+            },
+        );
+        let mut h = Harness::from_ui(ui, Size::new(400.0, 300.0));
+        h.click_label("+");
+        h.click_label("+");
+        assert!(h.find(Role::Label, "v1: 2").is_some());
+
+        // Simulate a hot-reload patch (v2 view): count signal MUST stay at 2!
+        *generation.borrow_mut() = 2;
+        assert!(h.reload_view());
+        assert!(h.find(Role::Label, "v2: 2").is_some());
+
+        // Clicking after reload still updates the preserved signal.
+        h.click_label("+");
+        assert!(h.find(Role::Label, "v2: 3").is_some());
+    }
+
+    #[test]
+    fn async_resource_delivers_result_to_ui_thread() {
+        use crate::{ResourceState, resource};
+
+        let res = resource(async { Ok::<_, String>(42usize) });
+        let mut h = Harness::new(move || {
+            text(move || match res.get() {
+                ResourceState::Loading => "loading".into(),
+                ResourceState::Ready(v) => format!("ready:{v}"),
+                ResourceState::Error(e) => format!("err:{e}"),
+            })
+        });
+        for _ in 0..50 {
+            if h.find(Role::Label, "ready:42").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            h.step(1.0 / 120.0);
+        }
+        assert!(h.find(Role::Label, "ready:42").is_some());
     }
 }

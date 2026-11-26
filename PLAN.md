@@ -185,7 +185,13 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
   - `canvas_chart` example (`cargo run --release --example canvas_chart`): animated bar & trend-line charts switching between quarterly datasets with hover hit-testing, paired with a 100,000-row virtualised transactions table (`docs/screenshots/m4_canvas_table.png`).
   - Measured on the base M1 at 2048×1480 physical while simultaneously animating both charts and scrolling 100k rows: `~0.96ms` CPU, `~9.1ms` GPU (GPU shadow-blur cost at large window sizes remains a perf tuning item before M6's 8ms ProMotion gate).
   - Tests: 18 reactive (incl. `Tracker`), 5 layout, 2 render, 18 widgets (incl. reactive `Canvas` signal tracking + hit-testing and 100k-row `Table` sort/selection/scroll tests) + 16 doctests.
-- M5–M6: not started.
+- **M5: Hot-reload.** Done (2026-11-27).
+  - `rugkit-widgets`:
+    - `Ui::new_reloadable(init_state, build_view)` / `rugkit::launch_reloadable` separates long-lived `state_owner` (signals) from view-scoped `view_owner`, rebuilding only the view tree on `subsecond` patches (behind optional `hot-reload` feature) or `Ui::reload_view()` while preserving all signal state.
+    - Executor-agnostic `spawn(future)` and `resource(async { ... })` (`Resource<T, E>`, `ResourceState<T, E>`) backed by a small built-in worker thread pool (no `tokio`) delivering results back to the UI thread via `WakeHandle`.
+  - `rugkit-cli` (`cargo-rugkit` binary): `cargo rugkit dev` delegates to `dx serve --hotpatch --features hot-reload` when `dioxus-cli` is installed, or runs a built-in `notify` file-watcher loop otherwise, plus `cargo rugkit info`.
+  - Tests: 64 tests passing (incl. hot-reload state preservation, async `resource` delivery, and `rugkit-cli` arg parsing & path filtering) + `--features hot-reload` verified against `subsecond 0.8.0-alpha.3`.
+- M6: in progress.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.

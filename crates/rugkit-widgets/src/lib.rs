@@ -18,6 +18,7 @@
 //!
 //! [`Ui`] hosts a tree in a window. Most apps go through the `rugkit` facade's `launch`.
 
+mod async_rt;
 mod canvas;
 mod common;
 mod controls;
@@ -35,6 +36,7 @@ mod ui;
 mod view;
 mod widgets;
 
+pub use async_rt::{Resource, ResourceState, resource, spawn};
 pub use canvas::{CanvasView, HitRegions, canvas};
 pub use controls::{
     Checkbox, Modal, Popover, Radio, Scroll, Select, Slider, Tabs, Toggle, Tooltip, VirtualList,

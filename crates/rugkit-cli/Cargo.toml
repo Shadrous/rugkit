@@ -1,0 +1,21 @@
+[package]
+name = "rugkit-cli"
+description = "Developer CLI (`cargo rugkit dev`) with subsecond hot-reload for rugkit apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cargo-rugkit"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+notify.workspace = true
+
+[lints]
+workspace = true

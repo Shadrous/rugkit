@@ -51,12 +51,12 @@ pub use rugkit_shell::{
 pub use rugkit_widgets::{
     Align, Animated, AnyView, Button, CanvasView, CellAlign, Checkbox, Children, Column, Direction,
     DirectionScope, Harness, HitRegions, Image, Insets, IntoProp, Justify, Modal, Motion, Popover,
-    Prop, Radii, Radio, Scroll, Select, SelectionMode, Slider, SnapshotOutcome, SortDirection,
-    Spacing, Spring, Stack, Table, Tabs, Text, TextInput, Theme, ThemeScope, Toggle, Tooltip,
-    TypeScale, Ui, View, VirtualList, button, canvas, check_snapshot, checkbox, column,
-    direction_scope, grid, image, modal, popover, radio, row, scroll, select, set_appearance,
-    set_theme, slider, table, tabs, text, text_input, theme, theme_scope, toggle, tooltip,
-    virtual_list, zstack,
+    Prop, Radii, Radio, Resource, ResourceState, Scroll, Select, SelectionMode, Slider,
+    SnapshotOutcome, SortDirection, Spacing, Spring, Stack, Table, Tabs, Text, TextInput, Theme,
+    ThemeScope, Toggle, Tooltip, TypeScale, Ui, View, VirtualList, button, canvas, check_snapshot,
+    checkbox, column, direction_scope, grid, image, modal, popover, radio, resource, row, scroll,
+    select, set_appearance, set_theme, slider, spawn, table, tabs, text, text_input, theme,
+    theme_scope, toggle, tooltip, virtual_list, zstack,
 };
 #[cfg(feature = "icons")]
 pub use rugkit_widgets::{Icon, IconName, icon};
@@ -68,17 +68,27 @@ pub fn launch<V: View>(options: WindowOptions, view: impl FnOnce() -> V) -> Resu
     run(options, Ui::new(view))
 }
 
+/// Opens a hot-reloadable window whose state is initialised once by `init_state` and preserved
+/// across `cargo rugkit dev` (`subsecond`) view patches.
+pub fn launch_reloadable<S: 'static, V: View>(
+    options: WindowOptions,
+    init_state: impl FnOnce() -> S,
+    build_view: impl FnMut(&S) -> V + 'static,
+) -> Result<(), Error> {
+    run(options, Ui::new_reloadable(init_state, build_view))
+}
+
 /// Everything most apps need, in one import: `use rugkit::prelude::*;`.
 pub mod prelude {
     pub use crate::{
         Align, App, Appearance, Brush, CellAlign, Color, ColorScheme, Column, Direction,
         FontFamily, FontWeight, FrameInfo, FrameStats, HitRegions, ImageData, Insets, Justify, Key,
-        MenuBar, MenuItem, Modifiers, Painter, Path, Point, Rect, Role, SelectionMode, Shadow,
-        Shortcut, Signal, Size, SortDirection, Spring, StandardMenuItem, Submenu, TextStyle, Theme,
-        Vec2, View, WindowOptions, WindowSpec, batch, button, canvas, checkbox, column,
-        direction_scope, effect, grid, image, memo, modal, popover, radio, row, scroll, select,
-        set_theme, signal, slider, table, tabs, text, text_input, theme, theme_scope, toggle,
-        tooltip, virtual_list, zstack,
+        MenuBar, MenuItem, Modifiers, Painter, Path, Point, Rect, Resource, ResourceState, Role,
+        SelectionMode, Shadow, Shortcut, Signal, Size, SortDirection, Spring, StandardMenuItem,
+        Submenu, TextStyle, Theme, Vec2, View, WindowOptions, WindowSpec, batch, button, canvas,
+        checkbox, column, direction_scope, effect, grid, image, memo, modal, popover, radio,
+        resource, row, scroll, select, set_theme, signal, slider, spawn, table, tabs, text,
+        text_input, theme, theme_scope, toggle, tooltip, virtual_list, zstack,
     };
     #[cfg(feature = "icons")]
     pub use crate::{IconName, icon};
