@@ -4,9 +4,9 @@
 
 rugkit is a Rust GUI framework built around visual polish and motion: a bold, playful design language, implicit spring animations, soft layered shadows and crisp text out of the box.
 
-> **Status: early development, M3 (widgets, theming, icons, inspector, gallery).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
+> **Status: early development, M4 (Table + Canvas).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
 
-![The M3 widget gallery in light mode: buttons, Lucide icons, checkboxes, toggles, radios, slider, text inputs, select, tabs, popover, modal, RTL mirroring, subtree theme override and a 100k-row virtualised list](docs/screenshots/m3_gallery_light.png)
+![The M4 canvas chart and 100k-row table demo: animated bar and trend-line charts above a 100,000-row virtualised transactions table](docs/screenshots/m4_canvas_table.png)
 
 ## What works today
 - A window (or multiple windows via `run_windows` sharing reactive signals) with a GPU-rendered frame loop (winit + wgpu/Metal + vello) and transparent macOS titlebar with draggable regions
@@ -14,7 +14,7 @@ rugkit is a Rust GUI framework built around visual polish and motion: a bold, pl
 - Text shaped by parley: SF Pro Rounded for UI text and SF Pro for dense text, both loaded from macOS (never bundled), with variable font weights
 - Live `FrameStats` (fps, CPU time, GPU time, worst frame)
 - **Signals:** Copy `signal`, `memo` and `effect` handles with owners and batching. Updates are glitch-free and fine-grained, with no diffing, and automatically wake an idle window via `WakeHandle`.
-- **Core widget set:** `text`, `button`, `text_input` (single-line & multiline), `checkbox`, `toggle`, `slider`, `radio`, `select`, `tabs`, `scroll`, `virtual_list` (100k+ rows), `image`, `icon` (bundled Lucide set behind default-on `icons` feature), `modal`, `popover`, `tooltip`, `row`, `column`, `grid`, `zstack`.
+- **Core widget set:** `text`, `button`, `text_input` (single-line & multiline), `checkbox`, `toggle`, `slider`, `radio`, `select`, `tabs`, `scroll`, `virtual_list` (100k+ rows), `table` (100k+ virtualised rows, sticky header, sort, column resize, single & multi-row selection, custom cell renderers), `canvas` (reactive `Painter` surface with automatic signal tracking and `HitRegions` hit-testing), `image`, `icon` (bundled Lucide set behind default-on `icons` feature), `modal`, `popover`, `tooltip`, `row`, `column`, `grid`, `zstack`.
 - **Layout:** Flexbox & CSS Grid via taffy, hidden behind rugkit's own types, plus RTL layout mirroring (`direction_scope(Direction::Rtl, ...)`).
 - **Theming & motion:** Typed design tokens (`Theme`, `Radii`, `Spacing`, `TypeScale`) with reactive macOS Light/Dark + accent tracking and subtree overrides (`theme_scope`). Implicit springs animate size, position, colour, elevation, scale, lift, opacity and focus rings while respecting macOS "Reduce motion".
 - **Platform integration:** Tab / Shift+Tab focus traversal with animated focus rings, CJK IME composition & clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), VoiceOver accessibility via AccessKit, native macOS menu bars, the `⌘⌥I` in-app inspector (layout bounds, slow-mo, live theme switching, frame stats), non-blocking offscreen pixel snapshot tests, and a headless `Harness` test API.
@@ -23,6 +23,10 @@ rugkit is a Rust GUI framework built around visual polish and motion: a bold, pl
 ## Try it
 
 Requires macOS and Rust 1.98 or newer.
+
+```bash
+cargo run --release --example canvas_chart
+```
 
 ```bash
 cargo run --release --example gallery

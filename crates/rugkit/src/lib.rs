@@ -33,10 +33,10 @@
 //! For full control over drawing, implement [`App`] and use the [`Painter`] directly via
 //! [`run`] or [`run_windows`].
 //!
-//! **Status: M3.** See `PLAN.md` in the repository for the roadmap.
+//! **Status: M4.** See `PLAN.md` in the repository for the roadmap.
 
 pub use rugkit_reactive::{
-    Effect, Memo, Owner, Signal, batch, effect, memo, on_cleanup, signal, untrack,
+    Effect, Memo, Owner, Signal, Tracker, batch, effect, memo, on_cleanup, signal, untrack,
 };
 pub use rugkit_render::{
     Brush, Color, FontFamily, FontWeight, ImageData, OffscreenRenderer, Painter, Path, Point, Rect,
@@ -49,12 +49,14 @@ pub use rugkit_shell::{
     WindowOptions, WindowSpec, clipboard, run, run_windows,
 };
 pub use rugkit_widgets::{
-    Align, AnyView, Button, Checkbox, Children, Direction, DirectionScope, Harness, Image, Insets,
-    IntoProp, Justify, Modal, Popover, Prop, Radii, Radio, Scroll, Select, Slider, SnapshotOutcome,
-    Spacing, Spring, Stack, Tabs, Text, TextInput, Theme, ThemeScope, Toggle, Tooltip, TypeScale,
-    Ui, View, VirtualList, button, check_snapshot, checkbox, column, direction_scope, grid, image,
-    modal, popover, radio, row, scroll, select, set_appearance, set_theme, slider, tabs, text,
-    text_input, theme, theme_scope, toggle, tooltip, virtual_list, zstack,
+    Align, Animated, AnyView, Button, CanvasView, CellAlign, Checkbox, Children, Column, Direction,
+    DirectionScope, Harness, HitRegions, Image, Insets, IntoProp, Justify, Modal, Motion, Popover,
+    Prop, Radii, Radio, Scroll, Select, SelectionMode, Slider, SnapshotOutcome, SortDirection,
+    Spacing, Spring, Stack, Table, Tabs, Text, TextInput, Theme, ThemeScope, Toggle, Tooltip,
+    TypeScale, Ui, View, VirtualList, button, canvas, check_snapshot, checkbox, column,
+    direction_scope, grid, image, modal, popover, radio, row, scroll, select, set_appearance,
+    set_theme, slider, table, tabs, text, text_input, theme, theme_scope, toggle, tooltip,
+    virtual_list, zstack,
 };
 #[cfg(feature = "icons")]
 pub use rugkit_widgets::{Icon, IconName, icon};
@@ -69,12 +71,13 @@ pub fn launch<V: View>(options: WindowOptions, view: impl FnOnce() -> V) -> Resu
 /// Everything most apps need, in one import: `use rugkit::prelude::*;`.
 pub mod prelude {
     pub use crate::{
-        Align, App, Appearance, Brush, Color, ColorScheme, Direction, FontFamily, FontWeight,
-        FrameInfo, FrameStats, ImageData, Insets, Justify, Key, MenuBar, MenuItem, Modifiers,
-        Painter, Path, Point, Rect, Role, Shadow, Shortcut, Signal, Size, Spring, StandardMenuItem,
-        Submenu, TextStyle, Theme, Vec2, View, WindowOptions, WindowSpec, batch, button, checkbox,
-        column, direction_scope, effect, grid, image, memo, modal, popover, radio, row, scroll,
-        select, set_theme, signal, slider, tabs, text, text_input, theme, theme_scope, toggle,
+        Align, App, Appearance, Brush, CellAlign, Color, ColorScheme, Column, Direction,
+        FontFamily, FontWeight, FrameInfo, FrameStats, HitRegions, ImageData, Insets, Justify, Key,
+        MenuBar, MenuItem, Modifiers, Painter, Path, Point, Rect, Role, SelectionMode, Shadow,
+        Shortcut, Signal, Size, SortDirection, Spring, StandardMenuItem, Submenu, TextStyle, Theme,
+        Vec2, View, WindowOptions, WindowSpec, batch, button, canvas, checkbox, column,
+        direction_scope, effect, grid, image, memo, modal, popover, radio, row, scroll, select,
+        set_theme, signal, slider, table, tabs, text, text_input, theme, theme_scope, toggle,
         tooltip, virtual_list, zstack,
     };
     #[cfg(feature = "icons")]

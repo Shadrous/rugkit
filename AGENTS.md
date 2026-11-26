@@ -44,13 +44,14 @@ v1 runs only on macOS, but only `rugkit-shell` may contain platform-specific cod
 Cargo.toml                 workspace root (edition 2024, shared deps and lints)
 crates/
   rugkit/                  facade crate: the one dependency users add; re-exports the others; `launch`
+    examples/canvas_chart.rs M4 demo: animated reactive Canvas charts + 100k-row virtualised Table
     examples/gallery.rs    M3 demo: full widget gallery in light & dark, RTL, subtree theme, 100k list, inspector
     examples/counter.rs    M1/M2 demo: signals, layout, springs, IME, AccessKit, menus, transparent titlebar
     examples/m0_pixels.rs  M0 demo: raw Painter drawing and frame stats
-  rugkit-reactive/         signals, memos, effects, owners (no dependencies, single-threaded)
+  rugkit-reactive/         signals, memos, effects, trackers, owners (no dependencies, single-threaded)
   rugkit-layout/           flexbox & grid layout + RTL mirroring; taffy hidden behind rugkit types
   rugkit-render/           Painter API, geometry, colour, Transform, Path, ImageData, clipping, opacity, offscreen renderer, text (+ layout cache & cursor hit-testing); vello + parley inside
-  rugkit-widgets/          retained view tree, implicit springs (motion), typed reactive light/dark theme + subtree overrides, core widget set, Lucide icons, `⌘⌥I` inspector, offscreen snapshots, `Ui`, headless `Harness`
+  rugkit-widgets/          retained view tree, implicit springs (motion), typed reactive light/dark theme + subtree overrides, core widget set, virtualised `Table`, reactive `Canvas`, Lucide icons, `⌘⌥I` inspector, offscreen snapshots, `Ui`, headless `Harness`
   rugkit-shell/            window & multi-window (`run_windows`), GPU surface, input/keyboard/scroll/IME events, AccessKit bridge, native menus (muda), clipboard (arboard), transparent titlebar, system appearance, Reduce Motion, WakeHandle; platform code lives here
 .github/workflows/ci.yml   fmt, clippy, tests, docs on a macOS runner
 docs/screenshots/          images used by README (window-only captures)

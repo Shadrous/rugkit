@@ -599,4 +599,128 @@ mod tests {
             SnapshotOutcome::Skipped(_) => {}
         }
     }
+
+    #[test]
+    fn reactive_canvas_tracks_signals_and_hit_tests() {
+        use crate::{HitRegions, canvas};
+        use rugkit_render::Rect;
+
+        let value = signal(10.0f64);
+        let draws = Rc::new(RefCell::new(0usize));
+        let draws_in_cb = draws.clone();
+        let hits = Rc::new(RefCell::new(HitRegions::<&'static str>::new()));
+        let hits_draw = hits.clone();
+        let hits_click = hits;
+        let clicked = signal(None::<&'static str>);
+
+        let mut h = Harness::with_size(Size::new(300.0, 200.0), move || {
+            canvas(move |p, rect| {
+                *draws_in_cb.borrow_mut() += 1;
+                let bar_h = value.get();
+                let local_bar = Rect::from_xywh(20.0, 20.0, 80.0, bar_h);
+                let mut reg = hits_draw.borrow_mut();
+                reg.clear();
+                reg.push_rect("bar-a", local_bar);
+                p.fill_rect(
+                    Rect::from_xywh(
+                        rect.x0 + local_bar.x0,
+                        rect.y0 + local_bar.y0,
+                        local_bar.width(),
+                        local_bar.height(),
+                    ),
+                    6.0,
+                    Color::from_hex(0x7B61FF),
+                );
+            })
+            .width(200.0)
+            .height(120.0)
+            .on_click(move |pt| {
+                let hit = hits_click.borrow().hit_test(pt).copied();
+                clicked.set(hit);
+            })
+        });
+
+        assert!(!h.wants_frame(), "canvas should idle after initial draw");
+        let before = *draws.borrow();
+
+        // Changing a signal read inside `canvas` automatically schedules a redraw!
+        value.set(60.0);
+        assert!(
+            h.wants_frame(),
+            "signal change read by canvas must schedule a redraw"
+        );
+        h.step(1.0 / 120.0);
+        assert!(*draws.borrow() > before);
+
+        // Clicking inside the hit region invokes on_click with canvas-local coords.
+        let canvas_node = h.by_role(Role::Image).into_iter().next().unwrap();
+        let click_pt = Point::new(canvas_node.bounds.x0 + 40.0, canvas_node.bounds.y0 + 40.0);
+        h.click_point(click_pt);
+        assert_eq!(clicked.get_untracked(), Some("bar-a"));
+    }
+
+    #[test]
+    fn table_supports_100k_rows_sort_resize_and_selection() {
+        use crate::{Column, SelectionMode, SortDirection, table};
+        use std::collections::BTreeSet;
+
+        #[derive(Clone)]
+        struct Item {
+            id: usize,
+            name: String,
+        }
+
+        let data: Vec<Item> = (0..100_000)
+            .map(|i| Item {
+                id: i,
+                name: format!("Row {i:06}"),
+            })
+            .collect();
+        let rows = signal(data);
+        let selected = signal(BTreeSet::new());
+        let sort = signal(None::<(usize, SortDirection)>);
+
+        let mut h = Harness::with_size(Size::new(600.0, 400.0), move || {
+            table(
+                rows,
+                vec![
+                    Column::text("id", "ID", 100.0, |r: &Item| r.id.to_string())
+                        .sort_by(|a, b| a.id.cmp(&b.id)),
+                    Column::text("name", "Name", 240.0, |r: &Item| r.name.clone()),
+                ],
+            )
+            .row_height(32.0)
+            .header_height(36.0)
+            .selection_mode(SelectionMode::Multiple)
+            .selected(selected)
+            .sort(sort)
+            .width(500.0)
+            .height(300.0)
+        });
+
+        let tbl = h.find(Role::List, "Table").expect("Table a11y node");
+        let b = tbl.bounds;
+
+        // Click first body row -> selects row 0.
+        h.click_point(Point::new(b.x0 + 50.0, b.y0 + 36.0 + 16.0));
+        assert_eq!(selected.get_untracked(), BTreeSet::from([0]));
+
+        // ArrowDown moves selection to row 1.
+        h.press_key(Key::ArrowDown);
+        assert_eq!(selected.get_untracked(), BTreeSet::from([1]));
+
+        // Clicking header column 0 cycles sort: None -> Asc -> Desc.
+        h.click_point(Point::new(b.x0 + 30.0, b.y0 + 18.0));
+        assert_eq!(sort.get_untracked(), Some((0, SortDirection::Ascending)));
+        h.click_point(Point::new(b.x0 + 30.0, b.y0 + 18.0));
+        assert_eq!(sort.get_untracked(), Some((0, SortDirection::Descending)));
+
+        // After descending sort on 100k rows, clicking first visible row selects index 99_999.
+        h.click_point(Point::new(b.x0 + 50.0, b.y0 + 36.0 + 16.0));
+        assert_eq!(selected.get_untracked(), BTreeSet::from([99_999]));
+
+        // Scroll 100k table down without panicking or stalling.
+        h.scroll(b.center(), Vec2::new(0.0, -5000.0));
+        assert!(h.settle() < 200);
+    }
 }

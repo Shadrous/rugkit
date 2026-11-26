@@ -177,7 +177,15 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
     - Non-blocking offscreen pixel snapshot helper (`check_snapshot`).
   - `gallery` example (`cargo run --release --example gallery`) visually verified in both Light and Dark mode (`docs/screenshots/m3_gallery_light.png`, `docs/screenshots/m3_gallery_dark.png`).
   - Tests: 17 reactive, 5 layout, 2 render, 16 widgets (including full M3 controls/modal/tabs/slider/virtual-list test and offscreen GPU snapshot test) + 16 doctests.
-- M4–M6: not started.
+- **M4: Table + Canvas.** Done (2026-11-27).
+  - `rugkit-reactive`: `Tracker` for automatic signal dependency tracking inside custom draw closures.
+  - `rugkit-widgets`:
+    - Reactive `canvas(|p, rect| ...)` (`CanvasView`) that automatically re-runs when any signal read during draw changes, with canvas-local pointer/hover/click callbacks and `HitRegions<T>` hit-testing helper (rects & circles).
+    - Capped `table(rows, columns)` (`Table<T>`, `Column<T>`, `CellAlign`, `SortDirection`, `SelectionMode`): fixed-height virtualised rows (smooth at 100k+), sticky header, cached column sort (`Asc`/`Desc`/`None`), interactive column resize via header dividers, single & multi-row selection (`⌘`-click, `Shift`-click, arrow keys with auto-scroll), and custom cell renderers.
+  - `canvas_chart` example (`cargo run --release --example canvas_chart`): animated bar & trend-line charts switching between quarterly datasets with hover hit-testing, paired with a 100,000-row virtualised transactions table (`docs/screenshots/m4_canvas_table.png`).
+  - Measured on the base M1 at 2048×1480 physical while simultaneously animating both charts and scrolling 100k rows: `~0.96ms` CPU, `~9.1ms` GPU (GPU shadow-blur cost at large window sizes remains a perf tuning item before M6's 8ms ProMotion gate).
+  - Tests: 18 reactive (incl. `Tracker`), 5 layout, 2 render, 18 widgets (incl. reactive `Canvas` signal tracking + hit-testing and 100k-row `Table` sort/selection/scroll tests) + 16 doctests.
+- M5–M6: not started.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.

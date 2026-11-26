@@ -280,6 +280,41 @@ pub(crate) fn create_effect(compute: Rc<dyn Compute>) -> NodeId {
     id
 }
 
+/// Creates a manual read-tracker whose `on_dirty` runs whenever any signal read inside
+/// [`track_reads`] subsequently changes.
+pub(crate) fn create_tracker(on_dirty: Rc<dyn Compute>) -> NodeId {
+    with_rt(|rt| {
+        rt.alloc_node(
+            Kind::Effect(on_dirty),
+            Rc::new(RefCell::new(None)),
+            State::Clean,
+        )
+    })
+}
+
+/// Runs `f` with `id` as the active observer, replacing its previous dependencies.
+pub(crate) fn track_reads<R>(id: NodeId, f: impl FnOnce() -> R) -> R {
+    let prev_observer = with_rt(|rt| {
+        if let Some(node) = rt.node_mut(id) {
+            let sources = std::mem::take(&mut node.sources);
+            node.state = State::Clean;
+            for s in sources {
+                if let Some(src) = rt.node_mut(s) {
+                    src.subscribers.retain(|x| *x != id);
+                }
+            }
+            rt.observer.replace(id)
+        } else {
+            rt.observer
+        }
+    });
+    let out = f();
+    with_rt(|rt| {
+        rt.observer = prev_observer;
+    });
+    out
+}
+
 /// Tracks a read of `id` by the current observer, brings memos up to date and returns the
 /// value slot.
 #[track_caller]

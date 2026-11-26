@@ -18,6 +18,7 @@
 //!
 //! [`Ui`] hosts a tree in a window. Most apps go through the `rugkit` facade's `launch`.
 
+mod canvas;
 mod common;
 mod controls;
 mod harness;
@@ -27,12 +28,14 @@ mod inspector;
 pub mod motion;
 mod prop;
 pub mod snapshot;
+mod table;
 mod theme;
 mod tree;
 mod ui;
 mod view;
 mod widgets;
 
+pub use canvas::{CanvasView, HitRegions, canvas};
 pub use controls::{
     Checkbox, Modal, Popover, Radio, Scroll, Select, Slider, Tabs, Toggle, Tooltip, VirtualList,
     checkbox, modal, popover, radio, scroll, select, slider, tabs, toggle, tooltip, virtual_list,
@@ -45,6 +48,7 @@ pub use prop::{IntoProp, Prop};
 pub use rugkit_layout::{Align, Direction, Insets, Justify};
 pub use rugkit_shell::{A11yAction, A11yId, A11yNode, A11yTree, Role};
 pub use snapshot::{SnapshotOutcome, check_snapshot};
+pub use table::{CellAlign, Column, SelectionMode, SortDirection, Table, table};
 pub use theme::{Radii, Spacing, Theme, TypeScale, set_appearance, set_theme, theme};
 pub use tree::NodeId;
 pub use ui::Ui;

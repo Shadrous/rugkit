@@ -305,6 +305,35 @@ pub fn effect(f: impl FnMut() + 'static) -> Effect {
     }
 }
 
+/// Tracks reactive reads during [`Tracker::track`] and invokes a callback when any of those
+/// signals or memos later change. Used by reactive drawing surfaces such as `canvas`.
+#[derive(Copy, Clone, Debug)]
+pub struct Tracker {
+    id: NodeId,
+}
+
+impl Tracker {
+    /// Creates a [`Tracker`] owned by the current [`Owner`] that calls `on_dirty` whenever a
+    /// signal read during [`track`](Self::track) changes.
+    pub fn new(on_dirty: impl FnMut() + 'static) -> Self {
+        Self {
+            id: runtime::create_tracker(Rc::new(EffectCompute {
+                f: RefCell::new(on_dirty),
+            })),
+        }
+    }
+
+    /// Runs `f`, subscribing this tracker to every signal or memo read while `f` executes.
+    pub fn track<R>(self, f: impl FnOnce() -> R) -> R {
+        runtime::track_reads(self.id, f)
+    }
+
+    /// Whether this tracker's owner is still alive.
+    pub fn is_alive(self) -> bool {
+        runtime::is_alive(self.id)
+    }
+}
+
 // ---- scopes -----------------------------------------------------------------------------
 
 /// Runs `f` without subscribing the current computation to anything `f` reads.

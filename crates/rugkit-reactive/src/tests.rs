@@ -242,3 +242,26 @@ fn root_owner_survives_child_disposal() {
     assert!(root_sig.is_alive());
     assert_eq!(root_sig.get(), 42);
 }
+
+#[test]
+fn tracker_notifies_when_tracked_signal_changes() {
+    let a = signal(1);
+    let b = signal(2);
+    let (dirty, d) = counter();
+    let tracker = Tracker::new(move || d.set(d.get() + 1));
+
+    let sum = tracker.track(|| a.get() + b.get());
+    assert_eq!(sum, 3);
+    assert_eq!(dirty.get(), 0);
+
+    a.set(10);
+    assert_eq!(dirty.get(), 1);
+
+    // Re-track reading only `b`; writing `a` should no longer notify.
+    let val = tracker.track(|| b.get());
+    assert_eq!(val, 2);
+    a.set(20);
+    assert_eq!(dirty.get(), 1);
+    b.set(30);
+    assert_eq!(dirty.get(), 2);
+}

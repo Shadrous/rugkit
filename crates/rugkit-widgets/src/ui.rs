@@ -15,7 +15,7 @@ use crate::controls::paint_tooltip;
 use crate::inspector::Inspector;
 use crate::motion::{Animated, Motion};
 use crate::theme::{set_appearance, theme};
-use crate::tree::{Content, NodeId, TreeHandle};
+use crate::tree::{Content, NodeId, PointerKind, TreeHandle};
 use crate::view::{BuildCx, View};
 
 /// Clipboard storage used by [`Ui`]: system clipboard in real windows, or in-memory in tests.
@@ -61,6 +61,7 @@ pub struct Ui {
     captured: Option<NodeId>,
     focused: Option<NodeId>,
     pointer_pos: Option<Point>,
+    modifiers: Modifiers,
     animating: bool,
     last_size: Option<Size>,
     background: Animated<Color>,
@@ -110,6 +111,7 @@ impl Ui {
             captured: None,
             focused: None,
             pointer_pos: None,
+            modifiers: Modifiers::default(),
             animating: false,
             last_size: None,
             background: Animated::new(theme().background),
@@ -167,13 +169,36 @@ impl Ui {
         })
     }
 
+    fn dispatch_pointer(&self, id: NodeId, kind: PointerKind, pos: Point) {
+        let mods = self.modifiers;
+        let hit = self.tree.with(|t| {
+            let n = t.nodes.get(id)?;
+            let rect = n.visual.frame.target();
+            n.interaction
+                .as_ref()
+                .and_then(|i| i.on_pointer.clone())
+                .map(|h| (h, rect))
+        });
+        if let Some((handler, rect)) = hit {
+            batch(|| handler(kind, pos, rect, mods));
+        }
+    }
+
     fn set_hover(&mut self, target: Option<NodeId>) {
         if target == self.hovered {
             return;
         }
+        let prev = self.hovered;
         let old = self.signals(self.hovered);
         let new = self.signals(target);
         self.hovered = target;
+        if let Some(prev_id) = prev {
+            self.dispatch_pointer(
+                prev_id,
+                PointerKind::Leave,
+                self.pointer_pos.unwrap_or(Point::ZERO),
+            );
+        }
         batch(|| {
             if let Some((h, _, _)) = old {
                 h.set_if_changed(false);
@@ -540,6 +565,7 @@ impl App for Ui {
                 let target = self.tree.with(|t| t.hit_test(*p));
                 self.set_hover(target);
                 if let Some(captured) = self.captured {
+                    self.dispatch_pointer(captured, PointerKind::Move, *p);
                     let drag = self.tree.with(|t| {
                         let n = t.nodes.get(captured)?;
                         let f = n.visual.frame.target();
@@ -553,45 +579,57 @@ impl App for Ui {
                     } else if let Some((_, pressed, _)) = self.signals(Some(captured)) {
                         pressed.set_if_changed(target == Some(captured));
                     }
+                } else if let Some(id) = target {
+                    self.dispatch_pointer(id, PointerKind::Move, *p);
                 }
             }
-            InputEvent::PointerDown(p, PointerButton::Primary) => {
+            InputEvent::PointerDown(p, btn) => {
                 self.pointer_pos = Some(*p);
                 let (target, draggable) =
                     self.tree.with(|t| (t.hit_test(*p), t.is_draggable_at(*p)));
                 self.set_hover(target);
-                self.set_focus(target);
-                self.captured = target;
-                if let Some((_, pressed, _)) = self.signals(target) {
-                    pressed.set(true);
-                } else if draggable {
-                    self.commands.push(WindowCommand::DragWindow);
+                if *btn == PointerButton::Primary {
+                    self.set_focus(target);
+                    self.captured = target;
+                    if let Some((_, pressed, _)) = self.signals(target) {
+                        pressed.set(true);
+                    } else if draggable {
+                        self.commands.push(WindowCommand::DragWindow);
+                    }
                 }
                 if let Some(id) = target {
-                    let drag = self.tree.with(|t| {
-                        let n = t.nodes.get(id)?;
-                        let f = n.visual.frame.target();
-                        n.interaction
-                            .as_ref()
-                            .and_then(|i| i.on_drag.clone())
-                            .map(|h| (h, f))
-                    });
-                    if let Some((handler, rect)) = drag {
-                        batch(|| handler(*p, rect));
+                    self.dispatch_pointer(id, PointerKind::Down(*btn), *p);
+                    if *btn == PointerButton::Primary {
+                        let drag = self.tree.with(|t| {
+                            let n = t.nodes.get(id)?;
+                            let f = n.visual.frame.target();
+                            n.interaction
+                                .as_ref()
+                                .and_then(|i| i.on_drag.clone())
+                                .map(|h| (h, f))
+                        });
+                        if let Some((handler, rect)) = drag {
+                            batch(|| handler(*p, rect));
+                        }
                     }
                 }
             }
-            InputEvent::PointerUp(p, PointerButton::Primary) => {
+            InputEvent::PointerUp(p, btn) => {
                 self.pointer_pos = Some(*p);
                 let target = self.tree.with(|t| t.hit_test(*p));
-                let Some(captured) = self.captured.take() else {
-                    return;
-                };
-                if let Some((_, pressed, _)) = self.signals(Some(captured)) {
-                    pressed.set_if_changed(false);
-                }
-                if target == Some(captured) {
-                    self.activate_node(captured);
+                if *btn == PointerButton::Primary {
+                    let Some(captured) = self.captured.take() else {
+                        return;
+                    };
+                    self.dispatch_pointer(captured, PointerKind::Up(*btn), *p);
+                    if let Some((_, pressed, _)) = self.signals(Some(captured)) {
+                        pressed.set_if_changed(false);
+                    }
+                    if target == Some(captured) {
+                        self.activate_node(captured);
+                    }
+                } else if let Some(id) = target {
+                    self.dispatch_pointer(id, PointerKind::Up(*btn), *p);
                 }
             }
             InputEvent::PointerLeave => {
@@ -627,7 +665,11 @@ impl App for Ui {
                 text,
                 ..
             } => {
+                self.modifiers = *modifiers;
                 self.handle_key_down(key, *modifiers, text.as_deref());
+            }
+            InputEvent::KeyUp { modifiers, .. } => {
+                self.modifiers = *modifiers;
             }
             InputEvent::Ime(ime) => self.handle_ime(ime),
             InputEvent::Focused(false) => {

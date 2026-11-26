@@ -6,7 +6,9 @@ use std::rc::Rc;
 use rugkit_layout::{LayoutId, LayoutStyle, LayoutTree};
 use rugkit_reactive::Signal;
 use rugkit_render::{Brush, Color, Painter, Point, Rect, Shadow, Size, TextStyle, Transform, Vec2};
-use rugkit_shell::{A11yId, A11yNode, A11yTree, Key as ShellKey, Modifiers, Role, WakeHandle};
+use rugkit_shell::{
+    A11yId, A11yNode, A11yTree, Key as ShellKey, Modifiers, PointerButton, Role, WakeHandle,
+};
 use slotmap::{Key, KeyData, SlotMap};
 
 use crate::motion::{Animated, Motion};
@@ -220,9 +222,19 @@ fn next_char_boundary(text: &str, idx: usize) -> usize {
         .map_or(text.len(), |c| idx + c.len_utf8())
 }
 
-/// Custom draw callback for icons, images, checkboxes, toggles, sliders and virtualised lists.
+/// Pointer event kind delivered to rich interactive widgets (`Canvas`, `Table`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PointerKind {
+    Move,
+    Down(PointerButton),
+    Up(PointerButton),
+    Leave,
+}
+
+/// Custom draw callback for icons, images, checkboxes, toggles, sliders, canvas and tables.
 pub(crate) type CustomPaint = Rc<dyn Fn(&mut Painter<'_>, Rect, Color)>;
 pub(crate) type DragHandler = Rc<dyn Fn(Point, Rect)>;
+pub(crate) type PointerHandler = Rc<dyn Fn(PointerKind, Point, Rect, Modifiers)>;
 pub(crate) type KeyHandler = Rc<dyn Fn(&ShellKey, Modifiers) -> bool>;
 pub(crate) type ScrollHandler = Rc<dyn Fn(Vec2)>;
 pub(crate) type CheckedGetter = Rc<dyn Fn() -> bool>;
@@ -244,6 +256,7 @@ pub(crate) struct Interaction {
     pub focusable: bool,
     pub on_click: Option<Rc<dyn Fn()>>,
     pub on_drag: Option<DragHandler>,
+    pub on_pointer: Option<PointerHandler>,
     pub on_key: Option<KeyHandler>,
     pub on_scroll: Option<ScrollHandler>,
 }

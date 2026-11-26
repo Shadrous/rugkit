@@ -167,6 +167,7 @@ impl View for Checkbox {
                 focusable: true,
                 on_click: Some(Rc::new(move || checked.update(|v| *v = !*v))),
                 on_drag: None,
+                on_pointer: None,
                 on_key: None,
                 on_scroll: None,
             });
@@ -320,6 +321,7 @@ impl View for Toggle {
                 focusable: true,
                 on_click: Some(Rc::new(move || on.update(|v| *v = !*v))),
                 on_drag: None,
+                on_pointer: None,
                 on_key: None,
                 on_scroll: None,
             });
@@ -475,6 +477,7 @@ impl View for Slider {
                     let frac = ((pt.x - (rect.x0 + pad)) / track_w).clamp(0.0, 1.0);
                     value.set_if_changed(quantise(min + frac * (max - min)));
                 })),
+                on_pointer: None,
                 on_key: Some(Rc::new(move |key, _mods| match key {
                     Key::ArrowLeft | Key::ArrowDown => {
                         value.set_if_changed(quantise(value.get_untracked() - key_step));
@@ -650,6 +653,7 @@ impl<T: PartialEq + Clone + 'static> View for Radio<T> {
                 focusable: true,
                 on_click: Some(Rc::new(move || selected.set(val_click.clone()))),
                 on_drag: None,
+                on_pointer: None,
                 on_key: None,
                 on_scroll: None,
             });
@@ -931,6 +935,7 @@ impl View for VirtualList {
                 focusable: true,
                 on_click: None,
                 on_drag: None,
+                on_pointer: None,
                 on_key: Some(Rc::new(move |key, _| match key {
                     Key::ArrowDown => {
                         scroll_offset.update(|y| *y = (*y + item_h).max(0.0));
@@ -1138,6 +1143,7 @@ impl<V: View> View for Modal<V> {
                 focusable: false,
                 on_click: Some(Rc::new(move || open.set(false))),
                 on_drag: None,
+                on_pointer: None,
                 on_key: Some(Rc::new(move |key, _| {
                     if *key == Key::Escape {
                         open.set(false);

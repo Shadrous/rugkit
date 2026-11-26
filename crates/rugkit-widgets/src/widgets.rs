@@ -236,6 +236,7 @@ impl View for Button {
                 focusable: true,
                 on_click: self.on_click,
                 on_drag: None,
+                on_pointer: None,
                 on_key: None,
                 on_scroll: None,
             });
@@ -443,6 +444,7 @@ impl View for TextInput {
                 focusable: true,
                 on_click: None,
                 on_drag: None,
+                on_pointer: None,
                 on_key: None,
                 on_scroll: None,
             });
