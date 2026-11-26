@@ -24,7 +24,7 @@ winit = "0.30.13"
 pollster = "1.0"
 log = "0.4"
 slotmap = "1.1"
-taffy = { version = "0.16", default-features = false, features = ["std", "taffy_tree", "flexbox", "content_size"] }
+taffy = { version = "0.16", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility", "NSColor", "NSColorSpace"] }
 accesskit = "0.25"
 accesskit_winit = "0.34"

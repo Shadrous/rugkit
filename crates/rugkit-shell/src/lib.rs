@@ -1,9 +1,10 @@
-//! Windowing, GPU surface, input, accessibility, menus, clipboard and frame loop for rugkit.
+//! Windowing, GPU surface, multi-window, input, accessibility, menus, clipboard and frame loop
+//! for rugkit.
 //!
 //! [`run`] opens a window and calls your [`App`] every frame with a [`Painter`] and
-//! [`FrameInfo`] (size, time, [`FrameStats`], [`Appearance`] and Reduce Motion). winit, wgpu,
-//! AccessKit, muda and arboard do the work underneath, and none of their types appear in this
-//! API.
+//! [`FrameInfo`]. [`run_windows`] opens multiple windows that share the UI thread (and
+//! therefore share reactive signals). winit, wgpu, AccessKit, muda and arboard do the work
+//! underneath, and none of their types appear in this API.
 //!
 //! Redraws happen on demand: after input events, when woken through a [`WakeHandle`], and for
 //! as long as the app says it wants frames (see [`App::wants_frame`], e.g. while animations
@@ -15,16 +16,17 @@ pub mod clipboard;
 mod input;
 pub mod menu;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rugkit_render::backend::vello::util::{RenderContext, RenderSurface};
 use rugkit_render::backend::vello::{self, wgpu};
-use rugkit_render::{Canvas, Color, Painter, Point, Rect, Size};
+use rugkit_render::{Canvas, Color, Painter, Point, Rect, Size, Vec2};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 use winit::window::{Theme as WinitTheme, Window, WindowId};
@@ -73,6 +75,34 @@ pub enum WindowCommand {
     DragWindow,
     /// Updates the window title.
     SetTitle(String),
+    /// Closes this window.
+    CloseWindow,
+}
+
+/// Specification for opening a window (used by [`run_windows`] and [`App::take_new_windows`]).
+pub struct WindowSpec {
+    /// Window configuration.
+    pub options: WindowOptions,
+    /// Application state for this window.
+    pub app: Box<dyn App>,
+}
+
+impl fmt::Debug for WindowSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowSpec")
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WindowSpec {
+    /// Creates a new [`WindowSpec`] from `options` and `app`.
+    pub fn new(options: WindowOptions, app: impl App) -> Self {
+        Self {
+            options,
+            app: Box::new(app),
+        }
+    }
 }
 
 /// Your application: handles input, accessibility, commands and draws frames when asked.
@@ -116,6 +146,11 @@ pub trait App: 'static {
 
     /// Drains any pending [`WindowCommand`]s (such as starting a titlebar drag).
     fn take_commands(&mut self) -> Vec<WindowCommand> {
+        Vec::new()
+    }
+
+    /// Drains any new windows requested to be opened on the shared UI thread.
+    fn take_new_windows(&mut self) -> Vec<WindowSpec> {
         Vec::new()
     }
 }
@@ -216,41 +251,38 @@ impl From<accesskit_winit::Event> for UserEvent {
 /// Opens a window and runs `app` until the window is closed.
 ///
 /// Must be called on the main thread. Returns when the window closes.
-pub fn run(options: WindowOptions, mut app: impl App) -> Result<(), Error> {
+pub fn run(options: WindowOptions, app: impl App) -> Result<(), Error> {
+    run_windows(vec![WindowSpec::new(options, app)])
+}
+
+/// Opens one or more windows sharing the UI thread (and reactive signals) and runs until all
+/// windows are closed.
+///
+/// Must be called on the main thread.
+pub fn run_windows(windows: Vec<WindowSpec>) -> Result<(), Error> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| Error(format!("event loop: {e}")))?;
     let proxy = event_loop.create_proxy();
 
-    // Forward native menu events into the winit event loop.
     let menu_proxy = proxy.clone();
     muda::MenuEvent::set_event_handler(Some(Arc::new(move |event: muda::MenuEvent| {
         let _ = menu_proxy.send_event(UserEvent::Menu(event.id.0));
     })));
 
-    app.attach(WakeHandle {
-        proxy: proxy.clone(),
-    });
-
     let initial_appearance = Appearance::new(ColorScheme::Light, platform::accent_color());
 
     let mut shell = Shell {
-        options,
-        app: Box::new(app),
+        pending: windows,
+        windows: HashMap::new(),
+        focused_window: None,
         proxy,
-        canvas: Canvas::new(),
         render_cx: RenderContext::new(),
-        gpu: None,
-        a11y: None,
         _menu: None,
-        clock: Clock::default(),
         error: None,
-        cursor: None,
-        modifiers: Modifiers::default(),
         reduce_motion: platform::reduce_motion(),
         appearance: initial_appearance,
         system_checked: Instant::now(),
-        last_ime: ImeState::default(),
     };
     event_loop
         .run_app(&mut shell)
@@ -261,68 +293,31 @@ pub fn run(options: WindowOptions, mut app: impl App) -> Result<(), Error> {
     }
 }
 
-struct Gpu {
+struct WindowState {
+    options: WindowOptions,
+    app: Box<dyn App>,
+    canvas: Canvas,
     window: Arc<Window>,
     surface: RenderSurface<'static>,
     renderer: vello::Renderer,
-}
-
-struct Shell {
-    options: WindowOptions,
-    app: Box<dyn App>,
-    proxy: EventLoopProxy<UserEvent>,
-    canvas: Canvas,
-    render_cx: RenderContext,
-    gpu: Option<Gpu>,
-    a11y: Option<accesskit_winit::Adapter>,
-    _menu: Option<muda::Menu>,
+    a11y: accesskit_winit::Adapter,
     clock: Clock,
-    error: Option<Error>,
-    /// Last pointer position in logical pixels.
     cursor: Option<Point>,
     modifiers: Modifiers,
-    reduce_motion: bool,
-    appearance: Appearance,
-    system_checked: Instant,
     last_ime: ImeState,
 }
 
-impl Shell {
-    fn dispatch(&mut self, event: InputEvent) {
-        self.app.event(&event);
-        self.drain_commands();
-        self.sync_ime();
-        if let Some(gpu) = &self.gpu {
-            gpu.window.request_redraw();
-        }
-    }
-
-    fn drain_commands(&mut self) {
-        let commands = self.app.take_commands();
-        let Some(gpu) = &self.gpu else { return };
-        for cmd in commands {
-            match cmd {
-                WindowCommand::DragWindow => {
-                    let _ = gpu.window.drag_window();
-                }
-                WindowCommand::SetTitle(title) => {
-                    gpu.window.set_title(&title);
-                }
-            }
-        }
-    }
-
+impl WindowState {
     fn sync_ime(&mut self) {
-        let Some(gpu) = &self.gpu else { return };
         let state = self.app.ime_state().unwrap_or_default();
         if state.enabled != self.last_ime.enabled {
-            gpu.window.set_ime_allowed(state.enabled);
+            self.window.set_ime_allowed(state.enabled);
         }
         if state.enabled
             && state.cursor_rect != self.last_ime.cursor_rect
             && let Some(r) = state.cursor_rect
         {
-            gpu.window.set_ime_cursor_area(
+            self.window.set_ime_cursor_area(
                 LogicalPosition::new(r.x0, r.y0),
                 LogicalSize::new(r.width().max(1.0), r.height().max(1.0)),
             );
@@ -331,30 +326,50 @@ impl Shell {
     }
 
     fn push_a11y(&mut self) {
-        let Some(a11y) = self.a11y.as_mut() else {
-            return;
-        };
-        let scale = self.gpu.as_ref().map_or(1.0, |g| g.window.scale_factor());
+        let scale = self.window.scale_factor();
         let app = &mut self.app;
-        a11y.update_if_active(|| {
+        self.a11y.update_if_active(|| {
             app.a11y_tree()
                 .map(|t| t.to_accesskit(scale))
                 .unwrap_or_else(empty_a11y_update)
         });
     }
+}
 
-    fn init_gpu(&mut self, event_loop: &ActiveEventLoop) -> Result<Gpu, Error> {
+struct Shell {
+    pending: Vec<WindowSpec>,
+    windows: HashMap<WindowId, WindowState>,
+    focused_window: Option<WindowId>,
+    proxy: EventLoopProxy<UserEvent>,
+    render_cx: RenderContext,
+    _menu: Option<muda::Menu>,
+    error: Option<Error>,
+    reduce_motion: bool,
+    appearance: Appearance,
+    system_checked: Instant,
+}
+
+impl Shell {
+    fn open_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        mut spec: WindowSpec,
+    ) -> Result<WindowId, Error> {
+        spec.app.attach(WakeHandle {
+            proxy: self.proxy.clone(),
+        });
+
         let mut attrs = Window::default_attributes()
-            .with_title(self.options.title.clone())
+            .with_title(spec.options.title.clone())
             .with_inner_size(LogicalSize::new(
-                self.options.size.width,
-                self.options.size.height,
+                spec.options.size.width,
+                spec.options.size.height,
             ))
             // AccessKit requires attaching its adapter before the window becomes visible.
             .with_visible(false);
 
         #[cfg(target_os = "macos")]
-        if self.options.transparent_titlebar {
+        if spec.options.transparent_titlebar {
             use winit::platform::macos::WindowAttributesExtMacOS;
             attrs = attrs
                 .with_titlebar_transparent(true)
@@ -367,25 +382,26 @@ impl Shell {
                 .create_window(attrs)
                 .map_err(|e| Error(format!("window: {e}")))?,
         );
+        let id = window.id();
 
         let a11y = accesskit_winit::Adapter::with_event_loop_proxy(
             event_loop,
             &window,
             self.proxy.clone(),
         );
-        self.a11y = Some(a11y);
 
-        // Observe the window's initial light/dark theme before showing it.
         let scheme = match window.theme() {
             Some(WinitTheme::Dark) => ColorScheme::Dark,
             _ => ColorScheme::Light,
         };
         let accent = platform::accent_color();
         self.appearance = Appearance::new(scheme, accent);
-        self.app
+        spec.app
             .event(&InputEvent::AppearanceChanged(self.appearance));
 
-        if let Some(bar) = &self.options.menu_bar {
+        if self._menu.is_none()
+            && let Some(bar) = &spec.options.menu_bar
+        {
             self._menu = menu::install_menu_bar(bar);
         }
 
@@ -408,33 +424,110 @@ impl Shell {
             },
         )
         .map_err(|e| Error(format!("renderer: {e}")))?;
-        Ok(Gpu {
-            window,
-            surface,
-            renderer,
-        })
+
+        window.request_redraw();
+        self.windows.insert(
+            id,
+            WindowState {
+                options: spec.options,
+                app: spec.app,
+                canvas: Canvas::new(),
+                window,
+                surface,
+                renderer,
+                a11y,
+                clock: Clock::default(),
+                cursor: None,
+                modifiers: Modifiers::default(),
+                last_ime: ImeState::default(),
+            },
+        );
+        if self.focused_window.is_none() {
+            self.focused_window = Some(id);
+        }
+        Ok(id)
     }
 
-    fn redraw(&mut self) {
+    fn dispatch(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: InputEvent) {
+        let (commands, new_windows) = {
+            let Some(win) = self.windows.get_mut(&id) else {
+                return;
+            };
+            win.app.event(&event);
+            win.sync_ime();
+            win.window.request_redraw();
+            (win.app.take_commands(), win.app.take_new_windows())
+        };
+        self.run_commands(event_loop, id, commands);
+        for spec in new_windows {
+            if let Err(err) = self.open_window(event_loop, spec) {
+                log::error!("rugkit: failed to open window: {err}");
+            }
+        }
+    }
+
+    fn run_commands(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        commands: Vec<WindowCommand>,
+    ) {
+        let mut close = false;
+        if let Some(win) = self.windows.get(&id) {
+            for cmd in commands {
+                match cmd {
+                    WindowCommand::DragWindow => {
+                        let _ = win.window.drag_window();
+                    }
+                    WindowCommand::SetTitle(title) => {
+                        win.window.set_title(&title);
+                    }
+                    WindowCommand::CloseWindow => {
+                        close = true;
+                    }
+                }
+            }
+        }
+        if close {
+            self.close_window(event_loop, id);
+        }
+    }
+
+    fn close_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        self.windows.remove(&id);
+        if self.focused_window == Some(id) {
+            self.focused_window = self.windows.keys().next().copied();
+        }
+        if self.windows.is_empty() {
+            event_loop.exit();
+        }
+    }
+
+    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         let frame_start = Instant::now();
         if frame_start - self.system_checked > Duration::from_secs(1) {
             self.reduce_motion = platform::reduce_motion();
             let accent = platform::accent_color();
             if accent != self.appearance.accent {
                 self.appearance.accent = accent;
-                self.app
-                    .event(&InputEvent::AppearanceChanged(self.appearance));
+                let appearance = self.appearance;
+                for win in self.windows.values_mut() {
+                    win.app.event(&InputEvent::AppearanceChanged(appearance));
+                    win.window.request_redraw();
+                }
             }
             self.system_checked = frame_start;
         }
 
-        let Some(gpu) = self.gpu.as_mut() else { return };
-        let physical = gpu.window.inner_size();
+        let Some(win) = self.windows.get_mut(&id) else {
+            return;
+        };
+        let physical = win.window.inner_size();
         if physical.width == 0 || physical.height == 0 {
             return;
         }
-        let scale = gpu.window.scale_factor();
-        let (time, dt) = self.clock.tick(frame_start);
+        let scale = win.window.scale_factor();
+        let (time, dt) = win.clock.tick(frame_start);
         let info = FrameInfo {
             size: Size::new(
                 f64::from(physical.width) / scale,
@@ -443,38 +536,38 @@ impl Shell {
             scale,
             time,
             dt,
-            stats: self.clock.stats,
+            stats: win.clock.stats,
             reduce_motion: self.reduce_motion,
             appearance: self.appearance,
         };
 
-        let mut painter = self.canvas.begin_frame(scale);
-        self.app.draw(&mut painter, &info);
+        let mut painter = win.canvas.begin_frame(scale);
+        win.app.draw(&mut painter, &info);
 
-        let handle = &self.render_cx.devices[gpu.surface.dev_id];
+        let handle = &self.render_cx.devices[win.surface.dev_id];
         let params = vello::RenderParams {
             base_color: vello::peniko::Color::new([
-                self.options.background.r,
-                self.options.background.g,
-                self.options.background.b,
-                self.options.background.a,
+                win.options.background.r,
+                win.options.background.g,
+                win.options.background.b,
+                win.options.background.a,
             ]),
-            width: gpu.surface.config.width,
-            height: gpu.surface.config.height,
+            width: win.surface.config.width,
+            height: win.surface.config.height,
             antialiasing_method: vello::AaConfig::Area,
         };
-        if let Err(e) = gpu.renderer.render_to_texture(
+        if let Err(e) = win.renderer.render_to_texture(
             &handle.device,
             &handle.queue,
-            self.canvas.vello_scene(),
-            &gpu.surface.target_view,
+            win.canvas.vello_scene(),
+            &win.surface.target_view,
             &params,
         ) {
             log::error!("rugkit: render failed: {e}");
             return;
         }
         let cpu = frame_start.elapsed();
-        let gpu_time = if self.options.measure_gpu {
+        let gpu_time = if win.options.measure_gpu {
             let _ = handle.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: Some(Duration::from_secs(1)),
@@ -484,17 +577,17 @@ impl Shell {
             None
         };
 
-        let surface_texture = match gpu.surface.surface.get_current_texture() {
+        let surface_texture = match win.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.render_cx.configure_surface(&gpu.surface);
-                gpu.window.request_redraw();
+                self.render_cx.configure_surface(&win.surface);
+                win.window.request_redraw();
                 return;
             }
             other => {
                 log::warn!("rugkit: skipped a frame: {other:?}");
-                gpu.window.request_redraw();
+                win.window.request_redraw();
                 return;
             }
         };
@@ -506,103 +599,124 @@ impl Shell {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rugkit blit"),
             });
-        gpu.surface.blitter.copy(
+        win.surface.blitter.copy(
             &handle.device,
             &mut encoder,
-            &gpu.surface.target_view,
+            &win.surface.target_view,
             &target,
         );
         handle.queue.submit([encoder.finish()]);
-        gpu.window.pre_present_notify();
+        win.window.pre_present_notify();
         handle.queue.present(surface_texture);
 
-        self.clock.record(cpu, gpu_time);
-        let wants = self.app.wants_frame();
-        if wants {
-            gpu.window.request_redraw();
+        win.clock.record(cpu, gpu_time);
+        if win.app.wants_frame() {
+            win.window.request_redraw();
         } else {
-            self.clock.idle = true;
+            win.clock.idle = true;
         }
+        win.sync_ime();
+        win.push_a11y();
 
-        self.sync_ime();
-        self.push_a11y();
+        let new_windows = win.app.take_new_windows();
+        let commands = win.app.take_commands();
+        self.run_commands(event_loop, id, commands);
+        for spec in new_windows {
+            if let Err(err) = self.open_window(event_loop, spec) {
+                log::error!("rugkit: failed to open window: {err}");
+            }
+        }
     }
 }
 
 impl ApplicationHandler<UserEvent> for Shell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gpu.is_some() {
-            return;
-        }
-        match self.init_gpu(event_loop) {
-            Ok(gpu) => {
-                gpu.window.request_redraw();
-                self.gpu = Some(gpu);
-            }
-            Err(err) => {
+        let pending = std::mem::take(&mut self.pending);
+        for spec in pending {
+            if let Err(err) = self.open_window(event_loop, spec) {
                 self.error = Some(err);
                 event_loop.exit();
+                return;
             }
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {
-                if let Some(gpu) = &self.gpu {
-                    gpu.window.request_redraw();
+                for win in self.windows.values() {
+                    win.window.request_redraw();
                 }
             }
-            UserEvent::Menu(id) => {
-                self.dispatch(InputEvent::MenuAction(id));
-            }
-            UserEvent::AccessKit(ev) => match ev.window_event {
-                accesskit_winit::WindowEvent::InitialTreeRequested => {
-                    self.push_a11y();
+            UserEvent::Menu(menu_id) => {
+                if let Some(id) = self.focused_window {
+                    self.dispatch(event_loop, id, InputEvent::MenuAction(menu_id));
                 }
-                accesskit_winit::WindowEvent::ActionRequested(req) => {
-                    if let Some(action) = a11y::action_from_accesskit(req) {
-                        self.app.a11y_action(&action);
-                        self.drain_commands();
-                        self.sync_ime();
-                        self.push_a11y();
-                        if let Some(gpu) = &self.gpu {
-                            gpu.window.request_redraw();
+            }
+            UserEvent::AccessKit(ev) => {
+                let id = ev.window_id;
+                match ev.window_event {
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                        if let Some(win) = self.windows.get_mut(&id) {
+                            win.push_a11y();
                         }
                     }
+                    accesskit_winit::WindowEvent::ActionRequested(req) => {
+                        if let Some(action) = a11y::action_from_accesskit(req) {
+                            let (commands, new_windows) = {
+                                let Some(win) = self.windows.get_mut(&id) else {
+                                    return;
+                                };
+                                win.app.a11y_action(&action);
+                                win.sync_ime();
+                                win.push_a11y();
+                                win.window.request_redraw();
+                                (win.app.take_commands(), win.app.take_new_windows())
+                            };
+                            self.run_commands(event_loop, id, commands);
+                            for spec in new_windows {
+                                let _ = self.open_window(event_loop, spec);
+                            }
+                        }
+                    }
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
                 }
-                accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
-            },
+            }
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let (Some(a11y), Some(gpu)) = (self.a11y.as_mut(), self.gpu.as_ref()) {
-            a11y.process_event(&gpu.window, &event);
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(win) = self.windows.get_mut(&id) {
+            win.a11y.process_event(&win.window, &event);
         }
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.close_window(event_loop, id),
             WindowEvent::Resized(size) => {
-                if let Some(gpu) = self.gpu.as_mut()
+                if let Some(win) = self.windows.get_mut(&id)
                     && size.width > 0
                     && size.height > 0
                 {
                     self.render_cx
-                        .resize_surface(&mut gpu.surface, size.width, size.height);
-                    gpu.window.request_redraw();
+                        .resize_surface(&mut win.surface, size.width, size.height);
+                    win.window.request_redraw();
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => self.redraw(event_loop, id),
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.gpu.as_ref().map_or(1.0, |g| g.window.scale_factor());
+                let Some(win) = self.windows.get_mut(&id) else {
+                    return;
+                };
+                let scale = win.window.scale_factor();
                 let p = Point::new(position.x / scale, position.y / scale);
-                self.cursor = Some(p);
-                self.dispatch(InputEvent::PointerMove(p));
+                win.cursor = Some(p);
+                self.dispatch(event_loop, id, InputEvent::PointerMove(p));
             }
             WindowEvent::CursorLeft { .. } => {
-                self.cursor = None;
-                self.dispatch(InputEvent::PointerLeave);
+                if let Some(win) = self.windows.get_mut(&id) {
+                    win.cursor = None;
+                }
+                self.dispatch(event_loop, id, InputEvent::PointerLeave);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
@@ -611,18 +725,51 @@ impl ApplicationHandler<UserEvent> for Shell {
                     MouseButton::Middle => PointerButton::Middle,
                     _ => return,
                 };
-                let Some(p) = self.cursor else { return };
-                self.dispatch(match state {
-                    ElementState::Pressed => InputEvent::PointerDown(p, button),
-                    ElementState::Released => InputEvent::PointerUp(p, button),
-                });
+                let Some(p) = self.windows.get(&id).and_then(|w| w.cursor) else {
+                    return;
+                };
+                self.dispatch(
+                    event_loop,
+                    id,
+                    match state {
+                        ElementState::Pressed => InputEvent::PointerDown(p, button),
+                        ElementState::Released => InputEvent::PointerUp(p, button),
+                    },
+                );
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(win) = self.windows.get(&id) else {
+                    return;
+                };
+                let scale = win.window.scale_factor();
+                let pos = win.cursor.unwrap_or(Point::ZERO);
+                let d = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        Vec2::new(f64::from(x) * 28.0, f64::from(y) * 28.0)
+                    }
+                    MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x / scale, p.y / scale),
+                };
+                self.dispatch(
+                    event_loop,
+                    id,
+                    InputEvent::Scroll {
+                        delta: d,
+                        position: pos,
+                    },
+                );
             }
             WindowEvent::ModifiersChanged(mods) => {
-                self.modifiers = convert_modifiers(mods.state());
+                if let Some(win) = self.windows.get_mut(&id) {
+                    win.modifiers = convert_modifiers(mods.state());
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(ev) = convert_key_event(&event, self.modifiers) {
-                    self.dispatch(ev);
+                let modifiers = self
+                    .windows
+                    .get(&id)
+                    .map_or(Modifiers::default(), |w| w.modifiers);
+                if let Some(ev) = convert_key_event(&event, modifiers) {
+                    self.dispatch(event_loop, id, ev);
                 }
             }
             WindowEvent::Ime(ime) => {
@@ -632,10 +779,13 @@ impl ApplicationHandler<UserEvent> for Shell {
                     Ime::Commit(text) => ImeEvent::Commit(text),
                     Ime::Disabled => ImeEvent::Disabled,
                 };
-                self.dispatch(InputEvent::Ime(ev));
+                self.dispatch(event_loop, id, InputEvent::Ime(ev));
             }
             WindowEvent::Focused(focused) => {
-                self.dispatch(InputEvent::Focused(focused));
+                if focused {
+                    self.focused_window = Some(id);
+                }
+                self.dispatch(event_loop, id, InputEvent::Focused(focused));
             }
             WindowEvent::ThemeChanged(theme) => {
                 let scheme = match theme {
@@ -644,7 +794,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                 };
                 let accent = platform::accent_color();
                 self.appearance = Appearance::new(scheme, accent);
-                self.dispatch(InputEvent::AppearanceChanged(self.appearance));
+                self.dispatch(
+                    event_loop,
+                    id,
+                    InputEvent::AppearanceChanged(self.appearance),
+                );
             }
             _ => {}
         }
@@ -723,8 +877,6 @@ struct Clock {
     gpu_sum: Duration,
     worst: Duration,
     gpu_seen: bool,
-    /// The previous frame didn't ask for a follow-up, so the gap before the next one is idle
-    /// time, not frame time.
     idle: bool,
 }
 
@@ -736,8 +888,6 @@ impl Clock {
         let start = *self.start.get_or_insert(now);
         let dt = match self.last {
             None => Duration::ZERO,
-            // Coming back from idle: report one nominal frame, so animations that start now
-            // don't jump by the whole idle gap.
             Some(_) if self.idle => Self::NOMINAL_FRAME,
             Some(l) => now - l,
         };
@@ -780,19 +930,16 @@ impl Clock {
 mod platform {
     use rugkit_render::Color;
 
-    /// Whether the user asked the OS to reduce motion.
     #[cfg(target_os = "macos")]
     pub(crate) fn reduce_motion() -> bool {
         objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
     }
 
-    /// Whether the user asked the OS to reduce motion. Not wired up off macOS yet.
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn reduce_motion() -> bool {
         false
     }
 
-    /// The system accent colour (macOS Settings › Appearance › Accent colour), in sRGB.
     #[cfg(target_os = "macos")]
     pub(crate) fn accent_color() -> Option<Color> {
         let accent = objc2_app_kit::NSColor::controlAccentColor();
@@ -806,7 +953,6 @@ mod platform {
         ))
     }
 
-    /// System accent colour. Not wired up off macOS yet.
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn accent_color() -> Option<Color> {
         None

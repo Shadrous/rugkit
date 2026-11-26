@@ -1,9 +1,12 @@
-//! The [`View`] trait, the build context and child lists.
+//! The [`View`] trait, the build context, child lists and subtree theme/direction scopes.
 
-use rugkit_layout::LayoutStyle;
+use std::rc::Rc;
+
+use rugkit_layout::{Direction, LayoutStyle};
 use rugkit_reactive::effect;
 
 use crate::prop::Prop;
+use crate::theme::{Theme, theme};
 use crate::tree::{Content, NodeId, Tree, TreeHandle};
 
 /// Something that can be built into the view tree.
@@ -38,19 +41,43 @@ impl View for AnyView {
     }
 }
 
-/// Passed to [`View::build`]: creates nodes and binds reactive properties to them.
+/// Shared closure returning the active [`Theme`] for a subtree.
+pub(crate) type ThemeGetter = Rc<dyn Fn() -> Theme>;
+
+/// Passed to [`View::build`]: creates nodes, binds reactive properties and carries scoped
+/// theme and layout direction.
 pub struct BuildCx {
     pub(crate) tree: TreeHandle,
+    pub(crate) theme_getter: ThemeGetter,
+    pub(crate) direction: Direction,
 }
 
 impl std::fmt::Debug for BuildCx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BuildCx")
+        f.debug_struct("BuildCx")
+            .field("direction", &self.direction)
+            .finish_non_exhaustive()
     }
 }
 
 impl BuildCx {
-    pub(crate) fn node(&mut self, style: LayoutStyle, content: Content) -> NodeId {
+    pub(crate) fn new(tree: TreeHandle) -> Self {
+        Self {
+            tree,
+            theme_getter: Rc::new(theme),
+            direction: Direction::Ltr,
+        }
+    }
+
+    /// Returns a cloneable getter for the active [`Theme`] in this subtree.
+    pub(crate) fn theme_getter(&self) -> ThemeGetter {
+        self.theme_getter.clone()
+    }
+
+    pub(crate) fn node(&mut self, mut style: LayoutStyle, content: Content) -> NodeId {
+        if style.direction == Direction::Ltr && self.direction == Direction::Rtl {
+            style.direction = Direction::Rtl;
+        }
         self.tree.with(|t| t.add(style, content))
     }
 
@@ -85,6 +112,71 @@ impl BuildCx {
                 });
             }
         }
+    }
+}
+
+/// Overrides design tokens for an entire subtree. Changes to signals read inside `override_fn`
+/// animate automatically across every widget in `child`.
+pub struct ThemeScope<V> {
+    override_fn: Rc<dyn Fn(Theme) -> Theme>,
+    child: V,
+}
+
+impl<V> std::fmt::Debug for ThemeScope<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThemeScope").finish_non_exhaustive()
+    }
+}
+
+/// Applies a reactive [`Theme`] override to `child` and all of its descendants.
+pub fn theme_scope<V: View>(
+    override_fn: impl Fn(Theme) -> Theme + 'static,
+    child: V,
+) -> ThemeScope<V> {
+    ThemeScope {
+        override_fn: Rc::new(override_fn),
+        child,
+    }
+}
+
+impl<V: View> View for ThemeScope<V> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let parent = cx.theme_getter();
+        let override_fn = self.override_fn;
+        let scoped: ThemeGetter = Rc::new(move || override_fn(parent()));
+        let saved = std::mem::replace(&mut cx.theme_getter, scoped);
+        let id = self.child.build(cx);
+        cx.theme_getter = saved;
+        id
+    }
+}
+
+/// Sets the layout [`Direction`] (`Ltr` or `Rtl`) for an entire subtree.
+pub struct DirectionScope<V> {
+    direction: Direction,
+    child: V,
+}
+
+impl<V> std::fmt::Debug for DirectionScope<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectionScope")
+            .field("direction", &self.direction)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Mirrors horizontal layout (`Row` child order and horizontal padding) for `child` when
+/// `direction` is [`Direction::Rtl`].
+pub fn direction_scope<V: View>(direction: Direction, child: V) -> DirectionScope<V> {
+    DirectionScope { direction, child }
+}
+
+impl<V: View> View for DirectionScope<V> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let saved = std::mem::replace(&mut cx.direction, self.direction);
+        let id = self.child.build(cx);
+        cx.direction = saved;
+        id
     }
 }
 

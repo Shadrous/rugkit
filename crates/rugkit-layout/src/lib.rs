@@ -16,9 +16,20 @@
 //! ```
 
 use taffy::prelude::{
-    AlignItems, AvailableSpace, Dimension, FlexDirection, JustifyContent, LengthPercentage,
-    LengthPercentageAuto, Rect as TRect, Size as TSize, Style, TaffyTree,
+    AlignItems, AvailableSpace, Dimension, Display, FlexDirection, JustifyContent,
+    LengthPercentage, LengthPercentageAuto, Position as TPosition, Rect as TRect, Size as TSize,
+    Style, TaffyTree, fr, repeat,
 };
+
+/// Reading and layout direction (for RTL mirroring).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// Left-to-right (default).
+    #[default]
+    Ltr,
+    /// Right-to-left: mirrors horizontal rows and horizontal padding.
+    Rtl,
+}
 
 /// Main axis of a container.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -143,6 +154,14 @@ pub struct LayoutStyle {
     pub grow: f64,
     /// Whether this node may shrink below its content size when space is short.
     pub shrink: bool,
+    /// Layout direction (`Ltr` or `Rtl`).
+    pub direction: Direction,
+    /// When `Some(cols)`, lays children out in a CSS Grid with `cols` equal columns.
+    pub grid_columns: Option<u16>,
+    /// When `true`, positions this node absolutely, filling its parent (used by `zstack` overlays).
+    pub absolute_fill: bool,
+    /// When `true`, collapses this node out of layout (`display: none`).
+    pub hidden: bool,
 }
 
 impl Default for LayoutStyle {
@@ -159,6 +178,10 @@ impl Default for LayoutStyle {
             min_height: None,
             grow: 0.0,
             shrink: false,
+            direction: Direction::Ltr,
+            grid_columns: None,
+            absolute_fill: false,
+            hidden: false,
         }
     }
 }
@@ -175,18 +198,51 @@ impl LayoutStyle {
             None => LengthPercentageAuto::auto(),
         };
         let lp = |v: f64| LengthPercentage::length(v as f32);
+        let (pad_left, pad_right) = match self.direction {
+            Direction::Ltr => (self.padding.left, self.padding.right),
+            Direction::Rtl => (self.padding.right, self.padding.left),
+        };
+        let display = if self.hidden {
+            Display::None
+        } else if self.grid_columns.is_some() {
+            Display::Grid
+        } else {
+            Display::Flex
+        };
+        let grid_template_columns = self
+            .grid_columns
+            .map(|cols| vec![repeat(cols.max(1), vec![fr(1.0)])])
+            .unwrap_or_default();
+        let (position, inset) = if self.absolute_fill {
+            (
+                TPosition::Absolute,
+                TRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    bottom: LengthPercentageAuto::length(0.0),
+                },
+            )
+        } else {
+            (TPosition::Relative, TRect::auto())
+        };
         Style {
-            flex_direction: match self.axis {
-                Axis::Row => FlexDirection::Row,
-                Axis::Column => FlexDirection::Column,
+            display,
+            position,
+            inset,
+            flex_direction: match (self.axis, self.direction) {
+                (Axis::Row, Direction::Ltr) => FlexDirection::Row,
+                (Axis::Row, Direction::Rtl) => FlexDirection::RowReverse,
+                (Axis::Column, _) => FlexDirection::Column,
             },
+            grid_template_columns,
             gap: TSize {
                 width: lp(self.gap),
                 height: lp(self.gap),
             },
             padding: TRect {
-                left: lp(self.padding.left),
-                right: lp(self.padding.right),
+                left: lp(pad_left),
+                right: lp(pad_right),
                 top: lp(self.padding.top),
                 bottom: lp(self.padding.bottom),
             },
@@ -425,5 +481,62 @@ mod tests {
         t.set_children(root, &[fixed, flex]);
         t.compute(root, (400.0, 10.0), |_, _, _| (0.0, 0.0));
         assert_eq!(t.rect(flex).width, 300.0);
+    }
+
+    #[test]
+    fn rtl_mirrors_row_order_and_padding() {
+        let mut t = LayoutTree::new();
+        let a = t.add(LayoutStyle {
+            width: Length::Px(40.0),
+            height: Length::Px(20.0),
+            ..Default::default()
+        });
+        let b = t.add(LayoutStyle {
+            width: Length::Px(60.0),
+            height: Length::Px(20.0),
+            ..Default::default()
+        });
+        let root = t.add(LayoutStyle {
+            axis: Axis::Row,
+            direction: Direction::Rtl,
+            gap: 10.0,
+            padding: Insets {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 20.0,
+            },
+            width: Length::Px(200.0),
+            height: Length::Px(40.0),
+            ..Default::default()
+        });
+        t.set_children(root, &[a, b]);
+        t.compute(root, (200.0, 40.0), |_, _, _| (0.0, 0.0));
+        // In RTL, first child `a` is placed on the right (before `b` on the left).
+        assert!(t.rect(a).x > t.rect(b).x);
+    }
+
+    #[test]
+    fn grid_lays_out_equal_columns() {
+        let mut t = LayoutTree::new();
+        let cells: Vec<_> = (0..4)
+            .map(|_| {
+                t.add(LayoutStyle {
+                    height: Length::Px(30.0),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let root = t.add(LayoutStyle {
+            grid_columns: Some(2),
+            gap: 10.0,
+            width: Length::Px(210.0),
+            ..Default::default()
+        });
+        t.set_children(root, &cells);
+        t.compute(root, (210.0, 200.0), |_, _, _| (0.0, 0.0));
+        assert_eq!(t.rect(cells[0]).width, 100.0);
+        assert_eq!(t.rect(cells[1]).x, 110.0);
+        assert_eq!(t.rect(cells[2]).y, 40.0);
     }
 }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use rugkit_layout::{LayoutId, LayoutStyle, LayoutTree};
 use rugkit_reactive::Signal;
 use rugkit_render::{Brush, Color, Painter, Point, Rect, Shadow, Size, TextStyle, Transform, Vec2};
-use rugkit_shell::{A11yId, A11yNode, A11yTree, Role, WakeHandle};
+use rugkit_shell::{A11yId, A11yNode, A11yTree, Key as ShellKey, Modifiers, Role, WakeHandle};
 use slotmap::{Key, KeyData, SlotMap};
 
 use crate::motion::{Animated, Motion};
@@ -220,11 +220,20 @@ fn next_char_boundary(text: &str, idx: usize) -> usize {
         .map_or(text.len(), |c| idx + c.len_utf8())
 }
 
+/// Custom draw callback for icons, images, checkboxes, toggles, sliders and virtualised lists.
+pub(crate) type CustomPaint = Rc<dyn Fn(&mut Painter<'_>, Rect, Color)>;
+pub(crate) type DragHandler = Rc<dyn Fn(Point, Rect)>;
+pub(crate) type KeyHandler = Rc<dyn Fn(&ShellKey, Modifiers) -> bool>;
+pub(crate) type ScrollHandler = Rc<dyn Fn(Vec2)>;
+pub(crate) type CheckedGetter = Rc<dyn Fn() -> bool>;
+pub(crate) type NumericGetter = Rc<dyn Fn() -> (f64, f64, f64)>;
+
 /// What a node draws besides its box.
 pub(crate) enum Content {
     None,
     Text { text: String, style: TextStyle },
     TextInput(TextInputState),
+    Custom(CustomPaint),
 }
 
 /// Pointer and keyboard interaction state for interactive nodes.
@@ -234,6 +243,9 @@ pub(crate) struct Interaction {
     pub focused: Signal<bool>,
     pub focusable: bool,
     pub on_click: Option<Rc<dyn Fn()>>,
+    pub on_drag: Option<DragHandler>,
+    pub on_key: Option<KeyHandler>,
+    pub on_scroll: Option<ScrollHandler>,
 }
 
 /// Animated visual properties. Setters animate after the first layout and snap before it.
@@ -248,9 +260,12 @@ pub(crate) struct Visual {
     pub border_color: Animated<Color>,
     pub scale: Animated<f64>,
     pub lift: Animated<f64>,
+    pub opacity: Animated<f64>,
     pub text_color: Animated<Color>,
     /// Focus ring visibility (`0.0` unfocused to `1.0` focused).
     pub focus_ring: Animated<f64>,
+    /// Smooth vertical scroll offset for scroll containers.
+    pub scroll_y: Animated<f64>,
     /// How geometry (frame, radius, elevation, scale, lift) animates.
     pub motion: Motion,
 }
@@ -269,8 +284,10 @@ impl Default for Visual {
             border_color: Animated::new(Color::TRANSPARENT),
             scale: Animated::new(1.0).geometry(),
             lift: Animated::new(0.0).geometry(),
+            opacity: Animated::new(1.0),
             text_color: Animated::new(t.ink),
             focus_ring: Animated::new(0.0),
+            scroll_y: Animated::new(0.0).geometry(),
             motion: Motion::Spring(t.layout_spring),
         }
     }
@@ -289,8 +306,20 @@ pub(crate) struct Node {
     pub role: Option<Role>,
     /// Explicit accessibility label (overrides inferred label).
     pub a11y_label: Option<String>,
+    /// Live checked/toggled getter for checkboxes, switches and radios.
+    pub a11y_checked: Option<CheckedGetter>,
+    /// Live numeric `(value, min, max)` getter for sliders.
+    pub a11y_numeric: Option<NumericGetter>,
     /// Whether pressing on this node (when not hitting an interactive child) drags the window.
     pub draggable: bool,
+    /// Whether this widget is disabled (blocks interaction and dims visually).
+    pub disabled: bool,
+    /// Whether children are clipped to this node's frame (used by scroll containers).
+    pub clip_content: bool,
+    /// Maximum vertical scroll extent in logical pixels.
+    pub scroll_max: f64,
+    /// Optional hover tooltip text.
+    pub tooltip: Option<String>,
 }
 
 impl Node {
@@ -353,7 +382,13 @@ impl Tree {
                 interaction: None,
                 role: None,
                 a11y_label: None,
+                a11y_checked: None,
+                a11y_numeric: None,
                 draggable: false,
+                disabled: false,
+                clip_content: false,
+                scroll_max: 0.0,
+                tooltip: None,
             }
         })
     }
@@ -437,8 +472,23 @@ impl Tree {
         Node::animate(node.laid_out, &mut node.visual.frame, frame);
         node.laid_out = true;
         let children = node.children.clone();
-        for child in children {
+        let clip_content = node.clip_content;
+        for &child in &children {
             self.place(child, frame.origin());
+        }
+        if clip_content {
+            let mut max_bottom = frame.y0;
+            for &child in &children {
+                let b = self.nodes[child].visual.frame.target().y1;
+                if b > max_bottom {
+                    max_bottom = b;
+                }
+            }
+            let node = &mut self.nodes[id];
+            let pad_b = node.style.padding.bottom;
+            node.scroll_max = ((max_bottom + pad_b) - frame.y1).max(0.0);
+            let clamped = node.visual.scroll_y.target().clamp(0.0, node.scroll_max);
+            node.visual.scroll_y.set_target(clamped);
         }
     }
 
@@ -459,10 +509,12 @@ impl Tree {
             moving |= v.elevation.step(dt, geo, reduce_motion);
             moving |= v.scale.step(dt, geo, reduce_motion);
             moving |= v.lift.step(dt, geo, reduce_motion);
+            moving |= v.opacity.step(dt, colors, reduce_motion);
             moving |= v.background.step(dt, colors, reduce_motion);
             moving |= v.border_color.step(dt, colors, reduce_motion);
             moving |= v.text_color.step(dt, colors, reduce_motion);
             moving |= v.focus_ring.step(dt, colors, reduce_motion);
+            moving |= v.scroll_y.step(dt, colors, reduce_motion);
         }
         moving
     }
@@ -474,6 +526,9 @@ impl Tree {
     }
 
     fn paint_node(&mut self, id: NodeId, p: &mut Painter<'_>, focused: Option<NodeId>) {
+        if self.nodes[id].style.hidden {
+            return;
+        }
         let active_theme = theme();
         let (
             frame,
@@ -486,6 +541,11 @@ impl Tree {
             border_w,
             border_color,
             focus_ring,
+            opacity,
+            disabled,
+            clip_content,
+            scroll_y,
+            scroll_max,
             children,
         ) = {
             let node = &self.nodes[id];
@@ -504,191 +564,361 @@ impl Tree {
                 v.border_width,
                 v.border_color.value(),
                 v.focus_ring.value(),
+                v.opacity.value() as f32,
+                node.disabled,
+                node.clip_content,
+                v.scroll_y.value(),
+                node.scroll_max,
                 node.children.clone(),
             )
         };
+        let effective_opacity = if disabled { opacity * 0.48 } else { opacity };
+        if effective_opacity <= 0.005 {
+            return;
+        }
 
-        p.with_transform(transform, |p| {
-            if elevation > 0.05 {
-                paint_elevation(p, frame, radius, elevation, shadow_tint, active_theme.ink);
-            }
-            if bg.a > 0.001 {
-                if gloss {
-                    let top = Point::new(frame.x0, frame.y0);
-                    let bottom = Point::new(frame.x0, frame.y1);
-                    let stops = [
-                        (0.0, bg.mix(Color::WHITE.with_alpha(bg.a), 0.18)),
-                        (1.0, bg.mix(Color::BLACK.with_alpha(bg.a), 0.04)),
-                    ];
-                    p.fill_rect(frame, radius, Brush::linear(top, bottom, stops));
-                } else {
-                    p.fill_rect(frame, radius, bg);
+        let draw_body = |this: &mut Self, p: &mut Painter<'_>| {
+            p.with_transform(transform, |p| {
+                if elevation > 0.05 {
+                    paint_elevation(p, frame, radius, elevation, shadow_tint, active_theme.ink);
                 }
-            }
-            if border_w > 0.0 {
-                p.stroke_rect(
-                    frame.inset(border_w / 2.0),
-                    (radius - border_w / 2.0).max(0.0),
-                    border_w,
-                    border_color,
-                );
-            }
-            if focus_ring > 0.01 {
-                let expand = 3.0 * focus_ring;
-                let ring_rect = frame.inset(-expand);
-                let ring_radius = (radius + expand).max(0.0);
-                p.stroke_rect(
-                    ring_rect,
-                    ring_radius,
-                    3.0,
-                    active_theme.accent.with_alpha(0.55 * focus_ring as f32),
-                );
-            }
-
-            let is_focused = focused == Some(id);
-            let node = &mut self.nodes[id];
-            match &mut node.content {
-                Content::None => {}
-                Content::Text { text, style } => {
-                    let style = style.clone().color(node.visual.text_color.value());
-                    // Wrap at the target width so text doesn't reflow while the frame animates.
-                    let width = node.visual.frame.target().width() + 0.5;
-                    p.text_wrapped(text, frame.origin(), width, &style);
-                }
-                Content::TextInput(state) => {
-                    let pad = node.style.padding;
-                    let inner = Rect::from_xywh(
-                        frame.x0 + pad.left,
-                        frame.y0 + pad.top,
-                        (frame.width() - pad.left - pad.right).max(1.0),
-                        (frame.height() - pad.top - pad.bottom).max(1.0),
-                    );
-                    let text_color = node.visual.text_color.value();
-                    let style = state.style.clone().color(text_color);
-                    let line_h = f64::from(style.size * style.line_height);
-                    let text_y = inner.y0 + ((inner.height() - line_h) * 0.5).max(0.0);
-                    let value = state.value.get_untracked();
-
-                    // Build display string (value + inline IME preedit at cursor).
-                    let cursor = clamp_boundary(&value, state.cursor);
-                    let (sel_start, sel_end) = state.selection(&value);
-                    let (display, preedit_span) = if let Some((pre, clause)) = &state.preedit
-                        && !pre.is_empty()
-                    {
-                        let mut s = String::with_capacity(value.len() + pre.len());
-                        s.push_str(&value[..sel_start]);
-                        let start = s.len();
-                        s.push_str(pre);
-                        let end = s.len();
-                        s.push_str(&value[sel_end..]);
-                        (s, Some((start, end, *clause)))
+                if bg.a > 0.001 {
+                    if gloss {
+                        let top = Point::new(frame.x0, frame.y0);
+                        let bottom = Point::new(frame.x0, frame.y1);
+                        let stops = [
+                            (0.0, bg.mix(Color::WHITE.with_alpha(bg.a), 0.18)),
+                            (1.0, bg.mix(Color::BLACK.with_alpha(bg.a), 0.04)),
+                        ];
+                        p.fill_rect(frame, radius, Brush::linear(top, bottom, stops));
                     } else {
-                        (value.clone(), None)
-                    };
-
-                    let caret_byte = match preedit_span {
-                        Some((start, end, Some((_, c_end)))) => (start + c_end).min(end),
-                        Some((_, end, None)) => end,
-                        None => cursor,
-                    };
-                    let caret_x_raw = p.text_x_for_byte(&display, caret_byte, &style);
-
-                    // Keep caret inside the visible horizontal bounds.
-                    if caret_x_raw - state.scroll_x > inner.width() - 2.0 {
-                        state.scroll_x = (caret_x_raw - inner.width() + 6.0).max(0.0);
-                    } else if caret_x_raw - state.scroll_x < 0.0 {
-                        state.scroll_x = caret_x_raw.max(0.0);
+                        p.fill_rect(frame, radius, bg);
                     }
-                    let origin_x = inner.x0 - state.scroll_x;
-                    state.cursor_rect = Rect::from_xywh(
-                        (origin_x + caret_x_raw).clamp(inner.x0, inner.x1),
-                        text_y,
-                        2.0,
-                        line_h,
+                }
+                if border_w > 0.0 {
+                    p.stroke_rect(
+                        frame.inset(border_w / 2.0),
+                        (radius - border_w / 2.0).max(0.0),
+                        border_w,
+                        border_color,
                     );
+                }
+                if focus_ring > 0.01 {
+                    let expand = 3.0 * focus_ring;
+                    let ring_rect = frame.inset(-expand);
+                    let ring_radius = (radius + expand).max(0.0);
+                    p.stroke_rect(
+                        ring_rect,
+                        ring_radius,
+                        3.0,
+                        active_theme.accent.with_alpha(0.55 * focus_ring as f32),
+                    );
+                }
 
-                    p.with_clip(inner, 4.0, |p| {
-                        // Selection highlight (when no IME preedit is active).
-                        if is_focused && preedit_span.is_none() && sel_start != sel_end {
-                            let sx0 = origin_x + p.text_x_for_byte(&display, sel_start, &style);
-                            let sx1 = origin_x + p.text_x_for_byte(&display, sel_end, &style);
-                            p.fill_rect(
-                                Rect::from_xywh(sx0, text_y, (sx1 - sx0).max(2.0), line_h),
-                                4.0,
-                                active_theme.accent.with_alpha(0.24),
-                            );
+                let is_focused = focused == Some(id);
+                let custom = {
+                    let node = &mut this.nodes[id];
+                    match &mut node.content {
+                        Content::None => None,
+                        Content::Custom(draw_fn) => {
+                            Some((draw_fn.clone(), node.visual.text_color.value()))
                         }
-
-                        if display.is_empty() {
-                            if !state.placeholder.is_empty() {
-                                let ph_style = style.clone().color(active_theme.ink_soft);
-                                p.text(&state.placeholder, Point::new(origin_x, text_y), &ph_style);
-                            }
-                        } else {
-                            p.text(&display, Point::new(origin_x, text_y), &style);
+                        Content::Text { text, style } => {
+                            let style = style.clone().color(node.visual.text_color.value());
+                            let width = node.visual.frame.target().width() + 0.5;
+                            p.text_wrapped(text, frame.origin(), width, &style);
+                            None
                         }
-
-                        // IME preedit underline + stronger active clause underline.
-                        if let Some((start, end, clause)) = preedit_span {
-                            let ux0 = origin_x + p.text_x_for_byte(&display, start, &style);
-                            let ux1 = origin_x + p.text_x_for_byte(&display, end, &style);
-                            let uy = text_y + line_h - 2.0;
-                            p.fill_rect(
-                                Rect::from_xywh(ux0, uy, (ux1 - ux0).max(2.0), 1.5),
-                                0.5,
-                                text_color.with_alpha(0.45),
+                        Content::TextInput(state) => {
+                            let pad = node.style.padding;
+                            let inner = Rect::from_xywh(
+                                frame.x0 + pad.left,
+                                frame.y0 + pad.top,
+                                (frame.width() - pad.left - pad.right).max(1.0),
+                                (frame.height() - pad.top - pad.bottom).max(1.0),
                             );
-                            if let Some((cs, ce)) = clause
-                                && cs < ce
+                            let text_color = node.visual.text_color.value();
+                            let style = state.style.clone().color(text_color);
+                            let line_h = f64::from(style.size * style.line_height);
+                            let text_y = inner.y0 + ((inner.height() - line_h) * 0.5).max(0.0);
+                            let value = state.value.get_untracked();
+
+                            let cursor = clamp_boundary(&value, state.cursor);
+                            let (sel_start, sel_end) = state.selection(&value);
+                            let (display, preedit_span) = if let Some((pre, clause)) =
+                                &state.preedit
+                                && !pre.is_empty()
                             {
-                                let cx0 = origin_x
-                                    + p.text_x_for_byte(&display, (start + cs).min(end), &style);
-                                let cx1 = origin_x
-                                    + p.text_x_for_byte(&display, (start + ce).min(end), &style);
-                                p.fill_rect(
-                                    Rect::from_xywh(cx0, uy - 0.5, (cx1 - cx0).max(2.0), 2.5),
-                                    1.0,
-                                    active_theme.accent,
-                                );
-                            }
-                        }
+                                let mut s = String::with_capacity(value.len() + pre.len());
+                                s.push_str(&value[..sel_start]);
+                                let start = s.len();
+                                s.push_str(pre);
+                                let end = s.len();
+                                s.push_str(&value[sel_end..]);
+                                (s, Some((start, end, *clause)))
+                            } else {
+                                (value.clone(), None)
+                            };
 
-                        // Caret bar when focused and no selection range.
-                        if is_focused && (preedit_span.is_some() || sel_start == sel_end) {
-                            let cx = origin_x + caret_x_raw;
+                            let caret_byte = match preedit_span {
+                                Some((start, end, Some((_, c_end)))) => (start + c_end).min(end),
+                                Some((_, end, None)) => end,
+                                None => cursor,
+                            };
+                            let caret_x_raw = p.text_x_for_byte(&display, caret_byte, &style);
+
+                            if caret_x_raw - state.scroll_x > inner.width() - 2.0 {
+                                state.scroll_x = (caret_x_raw - inner.width() + 6.0).max(0.0);
+                            } else if caret_x_raw - state.scroll_x < 0.0 {
+                                state.scroll_x = caret_x_raw.max(0.0);
+                            }
+                            let origin_x = inner.x0 - state.scroll_x;
+                            state.cursor_rect = Rect::from_xywh(
+                                (origin_x + caret_x_raw).clamp(inner.x0, inner.x1),
+                                text_y,
+                                2.0,
+                                line_h,
+                            );
+
+                            p.with_clip(inner, 4.0, |p| {
+                                if is_focused && preedit_span.is_none() && sel_start != sel_end {
+                                    let sx0 =
+                                        origin_x + p.text_x_for_byte(&display, sel_start, &style);
+                                    let sx1 =
+                                        origin_x + p.text_x_for_byte(&display, sel_end, &style);
+                                    p.fill_rect(
+                                        Rect::from_xywh(sx0, text_y, (sx1 - sx0).max(2.0), line_h),
+                                        4.0,
+                                        active_theme.accent.with_alpha(0.24),
+                                    );
+                                }
+
+                                if display.is_empty() {
+                                    if !state.placeholder.is_empty() {
+                                        let ph_style = style.clone().color(active_theme.ink_soft);
+                                        p.text(
+                                            &state.placeholder,
+                                            Point::new(origin_x, text_y),
+                                            &ph_style,
+                                        );
+                                    }
+                                } else {
+                                    p.text(&display, Point::new(origin_x, text_y), &style);
+                                }
+
+                                if let Some((start, end, clause)) = preedit_span {
+                                    let ux0 = origin_x + p.text_x_for_byte(&display, start, &style);
+                                    let ux1 = origin_x + p.text_x_for_byte(&display, end, &style);
+                                    let uy = text_y + line_h - 2.0;
+                                    p.fill_rect(
+                                        Rect::from_xywh(ux0, uy, (ux1 - ux0).max(2.0), 1.5),
+                                        0.5,
+                                        text_color.with_alpha(0.45),
+                                    );
+                                    if let Some((cs, ce)) = clause
+                                        && cs < ce
+                                    {
+                                        let cx0 = origin_x
+                                            + p.text_x_for_byte(
+                                                &display,
+                                                (start + cs).min(end),
+                                                &style,
+                                            );
+                                        let cx1 = origin_x
+                                            + p.text_x_for_byte(
+                                                &display,
+                                                (start + ce).min(end),
+                                                &style,
+                                            );
+                                        p.fill_rect(
+                                            Rect::from_xywh(
+                                                cx0,
+                                                uy - 0.5,
+                                                (cx1 - cx0).max(2.0),
+                                                2.5,
+                                            ),
+                                            1.0,
+                                            active_theme.accent,
+                                        );
+                                    }
+                                }
+
+                                if is_focused && (preedit_span.is_some() || sel_start == sel_end) {
+                                    let cx = origin_x + caret_x_raw;
+                                    p.fill_rect(
+                                        Rect::from_xywh(
+                                            cx,
+                                            text_y + 1.0,
+                                            2.0,
+                                            (line_h - 2.0).max(4.0),
+                                        ),
+                                        1.0,
+                                        active_theme.accent,
+                                    );
+                                }
+                            });
+                            None
+                        }
+                    }
+                };
+                if let Some((draw_fn, color)) = custom {
+                    draw_fn(p, frame, color);
+                }
+
+                if clip_content {
+                    p.with_clip(frame, radius, |p| {
+                        p.with_transform(Transform::translate(Vec2::new(0.0, -scroll_y)), |p| {
+                            for child in &children {
+                                this.paint_node(*child, p, focused);
+                            }
+                        });
+                        // Draw subtle scrollbar thumb when content overflows.
+                        if scroll_max > 1.0 && frame.height() > 16.0 {
+                            let content_h = frame.height() + scroll_max;
+                            let thumb_h = ((frame.height() / content_h) * frame.height())
+                                .clamp(24.0, frame.height() - 8.0);
+                            let frac = (scroll_y / scroll_max).clamp(0.0, 1.0);
+                            let thumb_y = frame.y0 + 4.0 + frac * (frame.height() - thumb_h - 8.0);
                             p.fill_rect(
-                                Rect::from_xywh(cx, text_y + 1.0, 2.0, (line_h - 2.0).max(4.0)),
-                                1.0,
-                                active_theme.accent,
+                                Rect::from_xywh(frame.x1 - 8.0, thumb_y, 4.0, thumb_h),
+                                2.0,
+                                active_theme.ink.with_alpha(0.24),
                             );
                         }
                     });
+                } else {
+                    for child in &children {
+                        this.paint_node(*child, p, focused);
+                    }
                 }
-            }
+            });
+        };
 
-            for child in children {
-                self.paint_node(child, p, focused);
-            }
-        });
+        if effective_opacity < 0.995 {
+            let bounds = frame.inset(-40.0);
+            p.with_opacity(effective_opacity, bounds, |p| draw_body(self, p));
+        } else {
+            draw_body(self, p);
+        }
     }
 
-    /// The topmost interactive node under `point` (using target frames).
+    /// Draws coloured layout-bounds outlines for every visible node (used by the inspector).
+    pub fn paint_inspector_bounds(&self, p: &mut Painter<'_>) {
+        if let Some(root) = self.root {
+            self.paint_bounds_rec(root, p, 0);
+        }
+    }
+
+    fn paint_bounds_rec(&self, id: NodeId, p: &mut Painter<'_>, depth: usize) {
+        let node = &self.nodes[id];
+        if node.style.hidden {
+            return;
+        }
+        let palette = [
+            Color::from_hex(0x00D1FF),
+            Color::from_hex(0xFF4D94),
+            Color::from_hex(0x00E5A0),
+            Color::from_hex(0xFFB74D),
+        ];
+        let color = palette[depth % palette.len()].with_alpha(0.55);
+        p.stroke_rect(node.visual.frame.value(), 2.0, 1.0, color);
+        for &child in &node.children {
+            self.paint_bounds_rec(child, p, depth + 1);
+        }
+    }
+
+    /// The topmost interactive, enabled, visible node under `point` (accounting for scroll offsets).
     pub fn hit_test(&self, point: Point) -> Option<NodeId> {
         self.root.and_then(|r| self.hit(r, point))
     }
 
     fn hit(&self, id: NodeId, p: Point) -> Option<NodeId> {
         let node = &self.nodes[id];
+        if node.style.hidden {
+            return None;
+        }
         let f = node.visual.frame.target();
         if p.x < f.x0 || p.x > f.x1 || p.y < f.y0 || p.y > f.y1 {
             return None;
         }
+        let child_p = if node.clip_content {
+            Point::new(p.x, p.y + node.visual.scroll_y.value())
+        } else {
+            p
+        };
         for child in node.children.iter().rev() {
-            if let Some(hit) = self.hit(*child, p) {
+            if let Some(hit) = self.hit(*child, child_p) {
                 return Some(hit);
             }
         }
-        node.interaction.as_ref().map(|_| id)
+        if !node.disabled && node.interaction.is_some() {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    /// Finds the innermost scroll container under `point`.
+    pub fn scroll_target_at(&self, point: Point) -> Option<NodeId> {
+        self.root.and_then(|r| self.hit_scroll(r, point))
+    }
+
+    fn hit_scroll(&self, id: NodeId, p: Point) -> Option<NodeId> {
+        let node = &self.nodes[id];
+        if node.style.hidden {
+            return None;
+        }
+        let f = node.visual.frame.target();
+        if p.x < f.x0 || p.x > f.x1 || p.y < f.y0 || p.y > f.y1 {
+            return None;
+        }
+        let child_p = if node.clip_content {
+            Point::new(p.x, p.y + node.visual.scroll_y.value())
+        } else {
+            p
+        };
+        for child in node.children.iter().rev() {
+            if let Some(hit) = self.hit_scroll(*child, child_p) {
+                return Some(hit);
+            }
+        }
+        if node.clip_content
+            || node
+                .interaction
+                .as_ref()
+                .is_some_and(|i| i.on_scroll.is_some())
+        {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    /// Finds the innermost node with a tooltip under `point`, returning `(tooltip_text, anchor_rect)`.
+    pub fn tooltip_at(&self, point: Point) -> Option<(String, Rect)> {
+        self.root.and_then(|r| self.hit_tooltip(r, point))
+    }
+
+    fn hit_tooltip(&self, id: NodeId, p: Point) -> Option<(String, Rect)> {
+        let node = &self.nodes[id];
+        if node.style.hidden {
+            return None;
+        }
+        let f = node.visual.frame.target();
+        if p.x < f.x0 || p.x > f.x1 || p.y < f.y0 || p.y > f.y1 {
+            return None;
+        }
+        let child_p = if node.clip_content {
+            Point::new(p.x, p.y + node.visual.scroll_y.value())
+        } else {
+            p
+        };
+        for child in node.children.iter().rev() {
+            if let Some(hit) = self.hit_tooltip(*child, child_p) {
+                return Some(hit);
+            }
+        }
+        node.tooltip.as_ref().map(|t| (t.clone(), f))
     }
 
     /// True if `point` falls inside a `.draggable()` region and not on an interactive widget.
@@ -701,6 +931,9 @@ impl Tree {
 
     fn hit_draggable(&self, id: NodeId, p: Point) -> bool {
         let node = &self.nodes[id];
+        if node.style.hidden {
+            return false;
+        }
         let f = node.visual.frame.target();
         if p.x < f.x0 || p.x > f.x1 || p.y < f.y0 || p.y > f.y1 {
             return false;
@@ -713,7 +946,7 @@ impl Tree {
         node.draggable
     }
 
-    /// All focusable nodes in depth-first traversal order.
+    /// All visible, enabled, focusable nodes in depth-first traversal order.
     pub fn focusable_nodes(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
         if let Some(root) = self.root {
@@ -724,6 +957,9 @@ impl Tree {
 
     fn collect_focusable(&self, id: NodeId, out: &mut Vec<NodeId>) {
         let node = &self.nodes[id];
+        if node.style.hidden || node.disabled {
+            return;
+        }
         if node.interaction.as_ref().is_some_and(|i| i.focusable) {
             out.push(id);
         }
@@ -760,17 +996,44 @@ impl Tree {
 
     fn collect_a11y(&self, id: NodeId, out: &mut Vec<A11yNode>, parent_children: &mut Vec<A11yId>) {
         let node = &self.nodes[id];
+        if node.style.hidden {
+            return;
+        }
         let bounds = node.visual.frame.target();
-        let focusable = node.interaction.as_ref().is_some_and(|i| i.focusable);
+        let focusable = !node.disabled && node.interaction.as_ref().is_some_and(|i| i.focusable);
 
         match node.role {
-            Some(Role::Button) => {
-                let mut a = A11yNode::new(id.to_a11y(), Role::Button, bounds);
+            Some(
+                role @ (Role::Button
+                | Role::Checkbox
+                | Role::Switch
+                | Role::RadioButton
+                | Role::ComboBox
+                | Role::Tab),
+            ) => {
+                let mut a = A11yNode::new(id.to_a11y(), role, bounds);
                 a.label = node
                     .a11y_label
                     .clone()
                     .or_else(|| self.first_descendant_text(id));
                 a.focusable = focusable;
+                a.disabled = node.disabled;
+                if let Some(chk) = &node.a11y_checked {
+                    a.checked = Some(chk());
+                }
+                parent_children.push(a.id);
+                out.push(a);
+            }
+            Some(Role::Slider) => {
+                let mut a = A11yNode::new(id.to_a11y(), Role::Slider, bounds);
+                a.label = node.a11y_label.clone();
+                a.focusable = focusable;
+                a.disabled = node.disabled;
+                if let Some(num) = &node.a11y_numeric {
+                    let (val, min, max) = num();
+                    a.numeric_value = Some(val);
+                    a.numeric_range = Some((min, max));
+                }
                 parent_children.push(a.id);
                 out.push(a);
             }
@@ -783,6 +1046,7 @@ impl Tree {
                     a.value = Some(state.value.get_untracked());
                 }
                 a.focusable = focusable;
+                a.disabled = node.disabled;
                 parent_children.push(a.id);
                 out.push(a);
             }
@@ -804,12 +1068,12 @@ impl Tree {
                 let mut a = A11yNode::new(id.to_a11y(), role, bounds);
                 a.label = node.a11y_label.clone();
                 a.focusable = focusable;
+                a.disabled = node.disabled;
                 a.children = children;
                 parent_children.push(a.id);
                 out.push(a);
             }
             None => {
-                // Anonymous layout container: flatten children directly into parent.
                 for &child in &node.children {
                     self.collect_a11y(child, out, parent_children);
                 }

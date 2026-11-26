@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use rugkit_render::{Canvas, Point, Size};
+use rugkit_render::{Canvas, Color, OffscreenRenderer, Point, Size, Vec2};
 use rugkit_shell::{
     A11yAction, A11yId, A11yNode, A11yTree, App, Appearance, FrameInfo, FrameStats, ImeEvent,
     ImeState, InputEvent, Key, Modifiers, PointerButton, Role, WindowCommand,
@@ -285,6 +285,35 @@ impl Harness {
     pub fn trigger_menu(&mut self, id: &str) {
         self.send(InputEvent::MenuAction(id.to_owned()));
     }
+
+    /// Simulates scrolling by `delta` logical pixels at `position`.
+    pub fn scroll(&mut self, position: Point, delta: Vec2) {
+        self.send(InputEvent::Scroll { delta, position });
+    }
+
+    /// Toggles the in-app inspector overlay.
+    pub fn toggle_inspector(&mut self) {
+        self.ui.toggle_inspector();
+        self.step(1.0 / 120.0);
+    }
+
+    /// Whether the in-app inspector overlay is currently open.
+    pub fn inspector_open(&self) -> bool {
+        self.ui.inspector_open()
+    }
+
+    /// Renders the latest frame offscreen via `renderer` and returns `(width, height, rgba8)`.
+    pub fn render_offscreen(
+        &mut self,
+        renderer: &mut OffscreenRenderer,
+        background: Color,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        self.step(1.0 / 120.0);
+        let w = (self.size.width * self.scale).round().max(1.0) as u32;
+        let h = (self.size.height * self.scale).round().max(1.0) as u32;
+        let rgba = renderer.render_to_rgba(&self.canvas, w, h, background)?;
+        Ok((w, h, rgba))
+    }
 }
 
 #[cfg(test)]
@@ -444,5 +473,130 @@ mod tests {
         // Native menu action routes to the Ui handler.
         h.trigger_menu("counter.inc");
         assert_eq!(menu_hits.get_untracked(), 1);
+    }
+
+    #[test]
+    fn m3_controls_checkbox_toggle_radio_slider_select_tabs_and_modal() {
+        use crate::{
+            IconName, checkbox, direction_scope, grid, icon, image, modal, popover, radio, scroll,
+            select, slider, tabs, theme_scope, toggle, tooltip, virtual_list, zstack,
+        };
+        use rugkit_layout::Direction;
+        use rugkit_render::{ImageData, Rect, TextStyle};
+
+        let checked = signal(false);
+        let switched = signal(false);
+        let choice = signal("A");
+        let level = signal(50.0);
+        let selected = signal(0usize);
+        let active_tab = signal(0usize);
+        let modal_open = signal(false);
+        let pop_open = signal(false);
+
+        let mut h = Harness::with_size(Size::new(900.0, 760.0), move || {
+            zstack((
+                scroll(
+                    column((
+                        row((
+                            checkbox(checked).label("Agree"),
+                            toggle(switched).label("Notifications"),
+                            radio(choice, "A").label("Alpha"),
+                            radio(choice, "B").label("Beta"),
+                        ))
+                        .gap(12.0),
+                        slider(level, 0.0, 100.0).step(10.0).a11y_label("Volume"),
+                        select(selected, vec!["One".into(), "Two".into()]),
+                        tabs(
+                            active_tab,
+                            vec![
+                                ("First".into(), text("Panel 1").into_any()),
+                                ("Second".into(), text("Panel 2").into_any()),
+                            ],
+                        ),
+                        popover(
+                            pop_open,
+                            button("Open Popover").on_click(move || pop_open.set(true)),
+                            text("Popover body"),
+                        ),
+                        tooltip("Helpful tip", icon(IconName::Star)),
+                        grid(2, (text("G1"), text("G2"))),
+                        image(ImageData::solid(24, 24, Color::from_hex(0x7B61FF))),
+                        theme_scope(
+                            |t| t.with_accent(Color::from_hex(0xFF5A5F)),
+                            direction_scope(Direction::Rtl, row((text("R1"), text("R2"))).gap(8.0)),
+                        ),
+                        virtual_list(100_000usize, 28.0, |p, i, r: Rect| {
+                            p.text(&format!("Row {i}"), r.origin(), &TextStyle::new(13.0));
+                        })
+                        .height(120.0),
+                        button("Open Modal").on_click(move || modal_open.set(true)),
+                    ))
+                    .gap(10.0),
+                )
+                .height(740.0),
+                modal(
+                    modal_open,
+                    button("Close Modal").on_click(move || modal_open.set(false)),
+                ),
+            ))
+        });
+
+        // Checkbox & Toggle
+        let agree = h.find(Role::Checkbox, "Agree").expect("Agree checkbox");
+        assert_eq!(agree.checked, Some(false));
+        h.a11y_click(agree.id);
+        assert!(checked.get_untracked());
+        assert_eq!(h.find(Role::Checkbox, "Agree").unwrap().checked, Some(true));
+
+        let sw = h
+            .find(Role::Switch, "Notifications")
+            .expect("Toggle switch");
+        h.a11y_click(sw.id);
+        assert!(switched.get_untracked());
+
+        // Radio
+        let beta = h.find(Role::RadioButton, "Beta").expect("Beta radio");
+        h.a11y_click(beta.id);
+        assert_eq!(choice.get_untracked(), "B");
+
+        // Slider via keyboard arrow
+        let vol = h.find(Role::Slider, "Volume").expect("Volume slider");
+        assert_eq!(vol.numeric_value, Some(50.0));
+        h.a11y_action(A11yAction::Focus(vol.id));
+        h.press_key(Key::ArrowRight);
+        assert_eq!(level.get_untracked(), 60.0);
+
+        // Tabs
+        let second_tab = h.find(Role::Tab, "Second").expect("Second tab");
+        h.a11y_click(second_tab.id);
+        assert_eq!(active_tab.get_untracked(), 1);
+        assert!(h.find(Role::Label, "Panel 2").is_some());
+
+        // Modal open & close
+        assert!(h.by_role(Role::Dialog).is_empty());
+        h.click_label("Open Modal");
+        assert_eq!(h.by_role(Role::Dialog).len(), 1);
+        h.click_label("Close Modal");
+        assert!(h.by_role(Role::Dialog).is_empty());
+
+        // Inspector toggle
+        assert!(!h.inspector_open());
+        h.toggle_inspector();
+        assert!(h.inspector_open());
+    }
+
+    #[test]
+    fn offscreen_snapshot_renders_without_failing() {
+        use crate::{SnapshotOutcome, check_snapshot};
+
+        let mut h = Harness::with_size(Size::new(320.0, 200.0), || {
+            column((text("Snapshot").size(24.0), button("Primary"))).gap(12.0)
+        });
+        let outcome = check_snapshot("smoke", &mut h, theme().background, 4, None);
+        match outcome {
+            SnapshotOutcome::CreatedBaseline { pixels } => assert!(pixels > 0),
+            SnapshotOutcome::Compared(diff) => assert_eq!(diff.differing_pixels, 0),
+            SnapshotOutcome::Skipped(_) => {}
+        }
     }
 }

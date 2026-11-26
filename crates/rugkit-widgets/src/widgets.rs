@@ -1,10 +1,11 @@
-//! Built-in widgets: [`text`], [`button`], [`text_input`], [`row`] and [`column()`].
+//! Core built-in widgets: [`text`], [`button`], [`text_input`], [`row`], [`column()`],
+//! [`zstack`], [`grid`] and [`image`].
 
 use std::rc::Rc;
 
-use rugkit_layout::{Align, Axis, Insets, Justify, LayoutStyle};
+use rugkit_layout::{Align, Axis, Direction, Insets, Justify, LayoutStyle, Length};
 use rugkit_reactive::{Signal, signal};
-use rugkit_render::{Color, FontFamily, FontWeight, Rect, TextStyle};
+use rugkit_render::{Color, FontFamily, FontWeight, ImageData, Rect, TextStyle};
 use rugkit_shell::Role;
 
 use crate::common::{Common, common_modifiers};
@@ -85,6 +86,7 @@ common_modifiers!(Text);
 
 impl View for Text {
     fn build(self, cx: &mut BuildCx) -> NodeId {
+        let get_theme = cx.theme_getter();
         let id = cx.node(
             LayoutStyle::default(),
             Content::Text {
@@ -98,7 +100,7 @@ impl View for Text {
         cx.bind(id, self.content, |t, id, v| t.set_text(id, v));
         let color_prop = self
             .color
-            .unwrap_or_else(|| Prop::Dynamic(Rc::new(|| theme().ink)));
+            .unwrap_or_else(|| Prop::Dynamic(Rc::new(move || get_theme().ink)));
         cx.bind(id, color_prop, |t, id, v| {
             let n = &mut t.nodes[id];
             Node::animate(n.laid_out, &mut n.visual.text_color, v);
@@ -124,6 +126,8 @@ pub struct Button {
     label: Prop<String>,
     variant: Variant,
     tint: Option<Color>,
+    label_color: Option<Prop<Color>>,
+    disabled: Option<Prop<bool>>,
     on_click: Option<Rc<dyn Fn()>>,
     common: Common,
 }
@@ -150,6 +154,8 @@ pub fn button(label: impl IntoProp<String>) -> Button {
         label: label.into_prop(),
         variant: Variant::Primary,
         tint: None,
+        label_color: None,
+        disabled: None,
         on_click: None,
         common: Common::default(),
     }
@@ -180,12 +186,25 @@ impl Button {
         self.tint = Some(color);
         self
     }
+
+    /// Disables the button (dims it and blocks clicks and focus), static or reactive.
+    pub fn disabled(mut self, disabled: impl IntoProp<bool>) -> Self {
+        self.disabled = Some(disabled.into_prop());
+        self
+    }
+
+    /// Overrides the label text colour (static or reactive).
+    pub fn label_color(mut self, color: impl IntoProp<Color>) -> Self {
+        self.label_color = Some(color.into_prop());
+        self
+    }
 }
 
 common_modifiers!(Button);
 
 impl View for Button {
     fn build(self, cx: &mut BuildCx) -> NodeId {
+        let get_theme = cx.theme_getter();
         let hovered = signal(false);
         let pressed = signal(false);
         let focused = signal(false);
@@ -216,6 +235,9 @@ impl View for Button {
                 focused,
                 focusable: true,
                 on_click: self.on_click,
+                on_drag: None,
+                on_key: None,
+                on_scroll: None,
             });
             n.visual.gloss = gloss;
             n.visual.radius.snap(999.0);
@@ -224,20 +246,31 @@ impl View for Button {
             }
         });
 
+        let label_theme = get_theme.clone();
+        let label_color = self.label_color.unwrap_or_else(|| {
+            Prop::Dynamic(Rc::new(move || match variant {
+                Variant::Primary => Color::WHITE,
+                Variant::Secondary => label_theme().ink,
+            }))
+        });
         let label = text(self.label)
             .size(17.0)
             .weight(FontWeight::BOLD)
-            .color(move || match variant {
-                Variant::Primary => Color::WHITE,
-                Variant::Secondary => theme().ink,
-            })
+            .color(label_color)
             .build(cx);
         cx.set_children(id, vec![label]);
 
+        if let Some(disabled) = self.disabled {
+            cx.bind(id, disabled, |tree, id, d| {
+                tree.nodes[id].disabled = d;
+            });
+        }
+
+        let bg_theme = get_theme;
         cx.bind(
             id,
             Prop::Dynamic(Rc::new(move || {
-                let t = theme();
+                let t = bg_theme();
                 let base = match variant {
                     Variant::Primary => custom_tint.unwrap_or(t.accent),
                     Variant::Secondary => t.surface,
@@ -254,7 +287,7 @@ impl View for Button {
                     Variant::Secondary => t.ink,
                 };
                 let border = if variant == Variant::Secondary {
-                    t.ink.with_alpha(0.09)
+                    t.border
                 } else {
                     Color::TRANSPARENT
                 };
@@ -293,12 +326,14 @@ impl View for Button {
 
 // ---- TextInput --------------------------------------------------------------------------
 
-/// A single-line editable plain text field with full keyboard editing, clipboard and IME
-/// (CJK, dead keys, emoji) support. Created with [`text_input`].
+/// A plain text field with full keyboard editing, clipboard and IME (CJK, dead keys, emoji)
+/// support. Created with [`text_input`].
 pub struct TextInput {
     value: Signal<String>,
     placeholder: String,
     style: TextStyle,
+    multiline: bool,
+    disabled: Option<Prop<bool>>,
     on_submit: Option<Rc<dyn Fn(String)>>,
     common: Common,
 }
@@ -307,11 +342,12 @@ impl std::fmt::Debug for TextInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextInput")
             .field("placeholder", &self.placeholder)
+            .field("multiline", &self.multiline)
             .finish_non_exhaustive()
     }
 }
 
-/// A single-line text input bound to `value`.
+/// A text input bound to `value`.
 ///
 /// Uses the regular UI typeface (`SF Pro` on macOS) for crisp, dense text editing, and
 /// supports CJK IME composition, selection, clipboard shortcuts and VoiceOver.
@@ -328,6 +364,8 @@ pub fn text_input(value: Signal<String>) -> TextInput {
         value,
         placeholder: String::new(),
         style: TextStyle::new(16.0).family(FontFamily::Ui),
+        multiline: false,
+        disabled: None,
         on_submit: None,
         common: Common::default(),
     }
@@ -346,6 +384,18 @@ impl TextInput {
         self
     }
 
+    /// Enables a taller multiline plain-text field.
+    pub fn multiline(mut self) -> Self {
+        self.multiline = true;
+        self
+    }
+
+    /// Disables editing and dims the field, static or reactive.
+    pub fn disabled(mut self, disabled: impl IntoProp<bool>) -> Self {
+        self.disabled = Some(disabled.into_prop());
+        self
+    }
+
     /// Runs `f` with the current text when Enter is pressed.
     pub fn on_submit(mut self, f: impl Fn(String) + 'static) -> Self {
         self.on_submit = Some(Rc::new(f));
@@ -357,6 +407,7 @@ common_modifiers!(TextInput);
 
 impl View for TextInput {
     fn build(self, cx: &mut BuildCx) -> NodeId {
+        let get_theme = cx.theme_getter();
         let hovered = signal(false);
         let pressed = signal(false);
         let focused = signal(false);
@@ -367,6 +418,7 @@ impl View for TextInput {
             LayoutStyle {
                 padding: Insets::symmetric(12.0, 16.0),
                 min_width: Some(220.0),
+                min_height: self.multiline.then_some(88.0),
                 ..Default::default()
             },
             Content::TextInput(TextInputState {
@@ -390,12 +442,20 @@ impl View for TextInput {
                 focused,
                 focusable: true,
                 on_click: None,
+                on_drag: None,
+                on_key: None,
+                on_scroll: None,
             });
             n.visual.radius.snap(16.0);
             n.visual.border_width = 1.5;
         });
 
-        // Subscribe to external edits of `value` so the window redraws.
+        if let Some(disabled) = self.disabled {
+            cx.bind(id, disabled, |tree, id, d| {
+                tree.nodes[id].disabled = d;
+            });
+        }
+
         cx.bind(
             id,
             Prop::Dynamic(Rc::new(move || value.get())),
@@ -405,7 +465,7 @@ impl View for TextInput {
         cx.bind(
             id,
             Prop::Dynamic(Rc::new(move || {
-                let t = theme();
+                let t = get_theme();
                 let is_focused = focused.get();
                 let is_hovered = hovered.get();
                 let bg = if is_focused {
@@ -418,9 +478,9 @@ impl View for TextInput {
                 let border = if is_focused {
                     t.accent
                 } else if is_hovered {
-                    t.ink.with_alpha(0.22)
+                    t.ink.with_alpha(0.24)
                 } else {
-                    t.ink.with_alpha(0.12)
+                    t.border
                 };
                 let ring = if is_focused { 1.0 } else { 0.0 };
                 let elev = if is_focused { 4.0 } else { 1.0 };
@@ -441,13 +501,14 @@ impl View for TextInput {
     }
 }
 
-// ---- Stack (row / column) ---------------------------------------------------------------
+// ---- Stack (row / column / grid / zstack) -----------------------------------------------
 
 type BuildChildren = Box<dyn FnOnce(&mut BuildCx) -> Vec<NodeId>>;
 
-/// A row or column of children. Created with [`row`] or [`column()`].
+/// A layout container (`row`, `column()`, `grid` or `zstack`).
 pub struct Stack {
     style: LayoutStyle,
+    overlay_children: bool,
     children: BuildChildren,
     common: Common,
 }
@@ -465,12 +526,13 @@ fn stack(axis: Axis, children: impl Children + 'static) -> Stack {
             align: Align::Center,
             ..Default::default()
         },
+        overlay_children: false,
         children: Box::new(move |cx| children.build_children(cx)),
         common: Common::default(),
     }
 }
 
-/// Lays children out left to right, vertically centred.
+/// Lays children out horizontally (left to right in LTR, right to left in RTL), vertically centred.
 ///
 /// ```
 /// use rugkit_widgets::{button, row, text};
@@ -484,6 +546,34 @@ pub fn row(children: impl Children + 'static) -> Stack {
 /// Lays children out top to bottom, horizontally centred.
 pub fn column(children: impl Children + 'static) -> Stack {
     stack(Axis::Column, children)
+}
+
+/// Lays children out in an equal-column grid with `columns` tracks.
+pub fn grid(columns: u16, children: impl Children + 'static) -> Stack {
+    Stack {
+        style: LayoutStyle {
+            grid_columns: Some(columns.max(1)),
+            align: Align::Stretch,
+            ..Default::default()
+        },
+        overlay_children: false,
+        children: Box::new(move |cx| children.build_children(cx)),
+        common: Common::default(),
+    }
+}
+
+/// Stacks children on top of each other (the first child sizes the box; later children overlay it).
+pub fn zstack(children: impl Children + 'static) -> Stack {
+    Stack {
+        style: LayoutStyle {
+            align: Align::Center,
+            justify: Justify::Center,
+            ..Default::default()
+        },
+        overlay_children: true,
+        children: Box::new(move |cx| children.build_children(cx)),
+        common: Common::default(),
+    }
 }
 
 impl Stack {
@@ -504,6 +594,12 @@ impl Stack {
         self.style.justify = justify;
         self
     }
+
+    /// Sets layout direction (`Ltr` or `Rtl`) on this container.
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.style.direction = direction;
+        self
+    }
 }
 
 common_modifiers!(Stack);
@@ -512,7 +608,64 @@ impl View for Stack {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let id = cx.node(self.style, Content::None);
         let children = (self.children)(cx);
+        if self.overlay_children {
+            for &child in children.iter().skip(1) {
+                cx.with_tree(|t| {
+                    t.update_style(child, |s| s.absolute_fill = true);
+                });
+            }
+        }
         cx.set_children(id, children);
+        self.common.apply(cx, id);
+        id
+    }
+}
+
+// ---- Image ------------------------------------------------------------------------------
+
+/// Displays an RGBA8 [`ImageData`] scaled to its layout box (clipped to corner radius).
+pub struct Image {
+    data: ImageData,
+    common: Common,
+}
+
+impl std::fmt::Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Image")
+            .field("width", &self.data.width())
+            .field("height", &self.data.height())
+            .finish()
+    }
+}
+
+/// Creates an [`Image`] widget from [`ImageData`].
+pub fn image(data: ImageData) -> Image {
+    Image {
+        data,
+        common: Common::default(),
+    }
+}
+
+common_modifiers!(Image);
+
+impl View for Image {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let w = f64::from(self.data.width());
+        let h = f64::from(self.data.height());
+        let data = self.data;
+        let id = cx.node(
+            LayoutStyle {
+                width: Length::Px(w),
+                height: Length::Px(h),
+                ..Default::default()
+            },
+            Content::Custom(Rc::new(move |p, rect, _| {
+                p.draw_image(rect, 0.0, &data);
+            })),
+        );
+        cx.with_tree(|t| {
+            t.nodes[id].role = Some(Role::Image);
+        });
         self.common.apply(cx, id);
         id
     }

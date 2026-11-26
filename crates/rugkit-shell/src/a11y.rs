@@ -22,6 +22,32 @@ pub enum Role {
     Button,
     /// An editable text field.
     TextInput,
+    /// A checkbox.
+    Checkbox,
+    /// A toggle switch.
+    Switch,
+    /// A range slider.
+    Slider,
+    /// A radio button.
+    RadioButton,
+    /// A dropdown / select control.
+    ComboBox,
+    /// A tab button inside a tab list.
+    Tab,
+    /// A container of tabs.
+    TabList,
+    /// A modal dialog.
+    Dialog,
+    /// A list container.
+    List,
+    /// An item inside a list.
+    ListItem,
+    /// A scrollable viewport.
+    ScrollView,
+    /// An image or icon.
+    Image,
+    /// A tooltip popup.
+    Tooltip,
 }
 
 /// One node in the accessibility tree.
@@ -35,6 +61,12 @@ pub struct A11yNode {
     pub label: Option<String>,
     /// Current value (e.g. text inside a [`Role::TextInput`]).
     pub value: Option<String>,
+    /// Checked / toggled state for checkboxes, switches and radio buttons.
+    pub checked: Option<bool>,
+    /// Numeric value for sliders.
+    pub numeric_value: Option<f64>,
+    /// Minimum and maximum numeric bounds for sliders.
+    pub numeric_range: Option<(f64, f64)>,
     /// Bounding rectangle in logical window coordinates.
     pub bounds: Rect,
     /// Child node IDs in traversal order.
@@ -53,6 +85,9 @@ impl A11yNode {
             role,
             label: None,
             value: None,
+            checked: None,
+            numeric_value: None,
+            numeric_range: None,
             bounds,
             children: Vec::new(),
             focusable: false,
@@ -114,6 +149,19 @@ fn node_to_accesskit(n: &A11yNode, scale: f64) -> accesskit::Node {
         Role::Label => accesskit::Role::Label,
         Role::Button => accesskit::Role::Button,
         Role::TextInput => accesskit::Role::TextInput,
+        Role::Checkbox => accesskit::Role::CheckBox,
+        Role::Switch => accesskit::Role::Switch,
+        Role::Slider => accesskit::Role::Slider,
+        Role::RadioButton => accesskit::Role::RadioButton,
+        Role::ComboBox => accesskit::Role::ComboBox,
+        Role::Tab => accesskit::Role::Tab,
+        Role::TabList => accesskit::Role::TabList,
+        Role::Dialog => accesskit::Role::Dialog,
+        Role::List => accesskit::Role::List,
+        Role::ListItem => accesskit::Role::ListItem,
+        Role::ScrollView => accesskit::Role::ScrollView,
+        Role::Image => accesskit::Role::Image,
+        Role::Tooltip => accesskit::Role::Tooltip,
     };
     let mut node = accesskit::Node::new(role);
     if let Some(label) = &n.label {
@@ -121,6 +169,20 @@ fn node_to_accesskit(n: &A11yNode, scale: f64) -> accesskit::Node {
     }
     if let Some(value) = &n.value {
         node.set_value(value.as_str());
+    }
+    if let Some(checked) = n.checked {
+        node.set_toggled(if checked {
+            accesskit::Toggled::True
+        } else {
+            accesskit::Toggled::False
+        });
+    }
+    if let Some(val) = n.numeric_value {
+        node.set_numeric_value(val);
+    }
+    if let Some((min, max)) = n.numeric_range {
+        node.set_min_numeric_value(min);
+        node.set_max_numeric_value(max);
     }
     node.set_bounds(accesskit::Rect {
         x0: n.bounds.x0 * scale,
@@ -144,7 +206,12 @@ fn node_to_accesskit(n: &A11yNode, scale: f64) -> accesskit::Node {
         node.set_disabled();
     }
     match n.role {
-        Role::Button => {
+        Role::Button
+        | Role::Checkbox
+        | Role::Switch
+        | Role::RadioButton
+        | Role::ComboBox
+        | Role::Tab => {
             node.add_action(accesskit::Action::Click);
         }
         Role::TextInput => {

@@ -5,13 +5,15 @@
 //! rugkit is a Rust GUI framework built around visual polish and motion. This is the facade
 //! crate: the one dependency you add. It re-exports everything you need.
 //!
-//! - **Views** are plain Rust builder chains ([`text`], [`button`], [`row`], [`column()`]),
-//!   built once into a retained tree.
+//! - **Views** are plain Rust builder chains ([`text`], [`button`], [`text_input`], [`checkbox`],
+//!   [`toggle`], [`slider`], [`radio`], [`select`], [`tabs`], [`scroll`], [`virtual_list`],
+//!   [`modal`], [`popover`], [`tooltip`], [`row`], [`column()`], [`grid`], [`zstack`]), built
+//!   once into a retained tree.
 //! - **State** lives in Copy [`Signal`]s. Closures that read signals keep exactly the
 //!   affected nodes up to date. Nothing is diffed.
-//! - **Motion is implicit.** Every visual change (size, position, colour, elevation, scale)
-//!   springs to its new value and keeps its velocity when interrupted. The OS "Reduce motion"
-//!   setting is respected.
+//! - **Motion is implicit.** Every visual change (size, position, colour, elevation, scale,
+//!   opacity, focus ring) springs to its new value and keeps its velocity when interrupted.
+//!   The OS "Reduce motion" setting is respected.
 //!
 //! ```no_run
 //! use rugkit::prelude::*;
@@ -29,27 +31,33 @@
 //! ```
 //!
 //! For full control over drawing, implement [`App`] and use the [`Painter`] directly via
-//! [`run`].
+//! [`run`] or [`run_windows`].
 //!
-//! **Status: M2.** See `PLAN.md` in the repository for the roadmap.
+//! **Status: M3.** See `PLAN.md` in the repository for the roadmap.
 
 pub use rugkit_reactive::{
     Effect, Memo, Owner, Signal, batch, effect, memo, on_cleanup, signal, untrack,
 };
 pub use rugkit_render::{
-    Brush, Color, FontFamily, FontWeight, Painter, Point, Rect, Shadow, Size, TextStyle, Transform,
-    Vec2,
+    Brush, Color, FontFamily, FontWeight, ImageData, OffscreenRenderer, Painter, Path, Point, Rect,
+    Shadow, Size, SnapshotDiff, TextStyle, Transform, Vec2, compare_rgba,
 };
 pub use rugkit_shell::{
     A11yAction, A11yId, A11yNode, A11yTree, App, Appearance, ColorScheme, Error, FrameInfo,
     FrameStats, ImeEvent, ImeState, InputEvent, Key, MenuBar, MenuEntry, MenuItem, Modifiers,
     PointerButton, Role, Shortcut, StandardMenuItem, Submenu, WakeHandle, WindowCommand,
-    WindowOptions, clipboard, run,
+    WindowOptions, WindowSpec, clipboard, run, run_windows,
 };
 pub use rugkit_widgets::{
-    Align, AnyView, Button, Children, Harness, Insets, IntoProp, Justify, Prop, Spring, Stack,
-    Text, TextInput, Theme, Ui, View, button, column, row, set_appearance, text, text_input, theme,
+    Align, AnyView, Button, Checkbox, Children, Direction, DirectionScope, Harness, Image, Insets,
+    IntoProp, Justify, Modal, Popover, Prop, Radii, Radio, Scroll, Select, Slider, SnapshotOutcome,
+    Spacing, Spring, Stack, Tabs, Text, TextInput, Theme, ThemeScope, Toggle, Tooltip, TypeScale,
+    Ui, View, VirtualList, button, check_snapshot, checkbox, column, direction_scope, grid, image,
+    modal, popover, radio, row, scroll, select, set_appearance, set_theme, slider, tabs, text,
+    text_input, theme, theme_scope, toggle, tooltip, virtual_list, zstack,
 };
+#[cfg(feature = "icons")]
+pub use rugkit_widgets::{Icon, IconName, icon};
 
 /// Opens a window showing the view returned by `view`, centred, and runs until it's closed.
 ///
@@ -61,9 +69,14 @@ pub fn launch<V: View>(options: WindowOptions, view: impl FnOnce() -> V) -> Resu
 /// Everything most apps need, in one import: `use rugkit::prelude::*;`.
 pub mod prelude {
     pub use crate::{
-        Align, App, Appearance, Brush, Color, ColorScheme, FontFamily, FontWeight, FrameInfo,
-        FrameStats, Insets, Justify, Key, MenuBar, MenuItem, Modifiers, Painter, Point, Rect, Role,
-        Shadow, Shortcut, Signal, Size, Spring, StandardMenuItem, Submenu, TextStyle, Vec2, View,
-        WindowOptions, batch, button, column, effect, memo, row, signal, text, text_input, theme,
+        Align, App, Appearance, Brush, Color, ColorScheme, Direction, FontFamily, FontWeight,
+        FrameInfo, FrameStats, ImageData, Insets, Justify, Key, MenuBar, MenuItem, Modifiers,
+        Painter, Path, Point, Rect, Role, Shadow, Shortcut, Signal, Size, Spring, StandardMenuItem,
+        Submenu, TextStyle, Theme, Vec2, View, WindowOptions, WindowSpec, batch, button, checkbox,
+        column, direction_scope, effect, grid, image, memo, modal, popover, radio, row, scroll,
+        select, set_theme, signal, slider, tabs, text, text_input, theme, theme_scope, toggle,
+        tooltip, virtual_list, zstack,
     };
+    #[cfg(feature = "icons")]
+    pub use crate::{IconName, icon};
 }

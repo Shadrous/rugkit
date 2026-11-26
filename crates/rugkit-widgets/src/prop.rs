@@ -59,7 +59,7 @@ macro_rules! static_prop {
     )*};
 }
 
-static_prop!(f64, bool, Color, String);
+static_prop!(f64, bool, usize, Color, String);
 
 impl IntoProp<String> for &str {
     fn into_prop(self) -> Prop<String> {

@@ -1,11 +1,12 @@
 //! The [`Painter`]: rugkit's drawing API.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Circle, Line, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Fill};
 
+use crate::path::round_stroke;
 use crate::text::TextSystem;
-use crate::{Brush, Point, Rect, Shadow, Size, TextStyle, Transform};
+use crate::{Brush, ImageData, Path, Point, Rect, Shadow, Size, TextStyle, Transform};
 
 /// Records one frame's drawing. Get one from [`Canvas::begin_frame`].
 ///
@@ -66,6 +67,30 @@ impl Painter<'_> {
         out
     }
 
+    /// Draws `f` into an isolated layer composited at `opacity` (`0.0..=1.0`) clipped to `bounds`.
+    pub fn with_opacity<R>(
+        &mut self,
+        opacity: f32,
+        bounds: Rect,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let alpha = opacity.clamp(0.0, 1.0);
+        if alpha >= 0.999 {
+            return f(self);
+        }
+        let shape = bounds.to_kurbo();
+        self.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            self.transform(),
+            &shape,
+        );
+        let out = f(self);
+        self.scene.pop_layer();
+        out
+    }
+
     /// Fills a rectangle whose corners are rounded by `radius` (clamped to half the shorter side).
     pub fn fill_rect(&mut self, rect: Rect, radius: f64, brush: impl Into<Brush>) {
         let shape = rounded(rect, radius);
@@ -89,6 +114,59 @@ impl Painter<'_> {
         let brush = brush.into().to_peniko();
         self.scene
             .fill(Fill::NonZero, self.transform(), &brush, None, &shape);
+    }
+
+    /// Fills a vector [`Path`].
+    pub fn fill_path(&mut self, path: &Path, brush: impl Into<Brush>) {
+        let brush = brush.into().to_peniko();
+        self.scene.fill(
+            Fill::NonZero,
+            self.transform(),
+            &brush,
+            None,
+            path.to_kurbo(),
+        );
+    }
+
+    /// Strokes a vector [`Path`] with rounded caps and joins.
+    pub fn stroke_path(&mut self, path: &Path, width: f64, brush: impl Into<Brush>) {
+        let brush = brush.into().to_peniko();
+        self.scene.stroke(
+            &round_stroke(width),
+            self.transform(),
+            &brush,
+            None,
+            path.to_kurbo(),
+        );
+    }
+
+    /// Strokes a straight line segment with rounded caps.
+    pub fn stroke_line(&mut self, from: Point, to: Point, width: f64, brush: impl Into<Brush>) {
+        let line = Line::new(from.to_kurbo(), to.to_kurbo());
+        let brush = brush.into().to_peniko();
+        self.scene
+            .stroke(&round_stroke(width), self.transform(), &brush, None, &line);
+    }
+
+    /// Draws an [`ImageData`] scaled to fill `rect`, clipped to corner `radius`.
+    pub fn draw_image(&mut self, rect: Rect, radius: f64, image: &ImageData) {
+        if image.width() == 0 || image.height() == 0 || rect.width() <= 0.0 || rect.height() <= 0.0
+        {
+            return;
+        }
+        let sx = rect.width() / f64::from(image.width());
+        let sy = rect.height() / f64::from(image.height());
+        let img_transform =
+            Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sy);
+        let brush = image.to_peniko_brush();
+        if radius > 0.0 {
+            self.with_clip(rect, radius, |p| {
+                p.scene.draw_image(&brush, p.transform() * img_transform);
+            });
+        } else {
+            self.scene
+                .draw_image(&brush, self.transform() * img_transform);
+        }
     }
 
     /// Draws the soft shadow that a rounded rectangle at `rect` would cast.

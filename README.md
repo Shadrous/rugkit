@@ -4,26 +4,29 @@
 
 rugkit is a Rust GUI framework built around visual polish and motion: a bold, playful design language, implicit spring animations, soft layered shadows and crisp text out of the box.
 
-> **Status: early development, M2 (platform plumbing).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
+> **Status: early development, M3 (widgets, theming, icons, inspector, gallery).** Nothing is published yet. v1 targets macOS first and keeps the core portable. See [PLAN.md](PLAN.md) for decisions, scope and milestones.
 
-![The counter demo: a card with a big number, a progress bar, pill buttons and a text input under a transparent titlebar](docs/screenshots/m2_counter.png)
+![The M3 widget gallery in light mode: buttons, Lucide icons, checkboxes, toggles, radios, slider, text inputs, select, tabs, popover, modal, RTL mirroring, subtree theme override and a 100k-row virtualised list](docs/screenshots/m3_gallery_light.png)
 
 ## What works today
-- A window with a GPU-rendered frame loop (winit + wgpu/Metal + vello) and transparent macOS titlebar with draggable regions
-- `Painter`: rounded rectangles, circles, strokes, linear gradients, gaussian soft shadows, rounded clipping
+- A window (or multiple windows via `run_windows` sharing reactive signals) with a GPU-rendered frame loop (winit + wgpu/Metal + vello) and transparent macOS titlebar with draggable regions
+- `Painter`: rounded rectangles, circles, vector `Path`s (with SVG `d` parsing), strokes, linear gradients, gaussian soft shadows, rounded clipping, opacity layers, RGBA8 `ImageData`, and offscreen GPU rendering (`OffscreenRenderer`)
 - Text shaped by parley: SF Pro Rounded for UI text and SF Pro for dense text, both loaded from macOS (never bundled), with variable font weights
 - Live `FrameStats` (fps, CPU time, GPU time, worst frame)
 - **Signals:** Copy `signal`, `memo` and `effect` handles with owners and batching. Updates are glitch-free and fine-grained, with no diffing, and automatically wake an idle window via `WakeHandle`.
-- **Views as builder chains:** `text`, `button`, `text_input`, `row` and `column`, built once into a retained tree. Every setter takes a value or a closure that reads signals.
-- **Flexbox layout** via taffy, hidden behind rugkit's own types
-- **Implicit springs:** size, position, colour, elevation, scale, lift and focus rings all animate, and interrupting an animation keeps its velocity. The macOS "Reduce motion" setting is respected.
-- **System appearance:** follows macOS Light/Dark mode and system accent colour, animated on change.
-- **Platform integration:** Tab / Shift+Tab focus traversal with animated focus rings, `TextInput` with CJK IME composition & clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), VoiceOver accessibility via AccessKit, native macOS menu bars, and a headless `Harness` test API.
+- **Core widget set:** `text`, `button`, `text_input` (single-line & multiline), `checkbox`, `toggle`, `slider`, `radio`, `select`, `tabs`, `scroll`, `virtual_list` (100k+ rows), `image`, `icon` (bundled Lucide set behind default-on `icons` feature), `modal`, `popover`, `tooltip`, `row`, `column`, `grid`, `zstack`.
+- **Layout:** Flexbox & CSS Grid via taffy, hidden behind rugkit's own types, plus RTL layout mirroring (`direction_scope(Direction::Rtl, ...)`).
+- **Theming & motion:** Typed design tokens (`Theme`, `Radii`, `Spacing`, `TypeScale`) with reactive macOS Light/Dark + accent tracking and subtree overrides (`theme_scope`). Implicit springs animate size, position, colour, elevation, scale, lift, opacity and focus rings while respecting macOS "Reduce motion".
+- **Platform integration:** Tab / Shift+Tab focus traversal with animated focus rings, CJK IME composition & clipboard shortcuts (`⌘C`/`⌘X`/`⌘V`/`⌘A`), VoiceOver accessibility via AccessKit, native macOS menu bars, the `⌘⌥I` in-app inspector (layout bounds, slow-mo, live theme switching, frame stats), non-blocking offscreen pixel snapshot tests, and a headless `Harness` test API.
 - **On-demand frames:** an idle window draws nothing
 
 ## Try it
 
 Requires macOS and Rust 1.98 or newer.
+
+```bash
+cargo run --release --example gallery
+```
 
 ```bash
 cargo run --release --example counter

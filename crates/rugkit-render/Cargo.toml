@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 vello.workspace = true
 parley.workspace = true
+pollster.workspace = true
 log.workspace = true
 
 [lints]

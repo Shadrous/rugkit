@@ -21,6 +21,9 @@ pub(crate) struct Common {
     pub elevation: Option<Prop<f64>>,
     pub shadow_tint: Option<Prop<Color>>,
     pub scale: Option<Prop<f64>>,
+    pub opacity: Option<Prop<f64>>,
+    pub visible: Option<Prop<bool>>,
+    pub border: Option<(f64, Prop<Color>)>,
     pub motion: Option<Motion>,
     pub a11y_label: Option<String>,
     pub draggable: bool,
@@ -94,13 +97,37 @@ impl Common {
                 Node::animate(n.laid_out, &mut n.visual.scale, v);
             });
         }
+        if let Some(op) = self.opacity {
+            cx.bind(id, op, |t, id, v| {
+                let n = &mut t.nodes[id];
+                Node::animate(n.laid_out, &mut n.visual.opacity, v.clamp(0.0, 1.0));
+            });
+        }
+        if let Some(vis) = self.visible {
+            cx.bind(id, vis, |t, id, show| {
+                t.update_style(id, |s| s.hidden = !show);
+            });
+        }
+        if let Some((w, color)) = self.border {
+            cx.with_tree(|t| t.nodes[id].visual.border_width = w);
+            cx.bind(id, color, |t, id, c| {
+                let n = &mut t.nodes[id];
+                Node::animate(n.laid_out, &mut n.visual.border_color, c);
+            });
+        }
     }
 }
 
 /// Generates the shared modifier methods on a widget builder that has a `common: Common` field.
 macro_rules! common_modifiers {
-    ($ty:ty) => {
-        impl $ty {
+    ($ty:ident) => {
+        common_modifiers!(@impl [] $ty [] []);
+    };
+    ($ty:ident < $($gen:ident),+ > where $($wh:tt)+) => {
+        common_modifiers!(@impl [$($gen),+] $ty [$($gen),+] [where $($wh)+]);
+    };
+    (@impl [$($gen:ident),*] $ty:ident [$($args:ident),*] [$($wh:tt)*]) => {
+        impl<$($gen),*> $ty<$($args),*> $($wh)* {
             /// Fixed width in logical pixels (static or reactive). Changes animate.
             pub fn width(mut self, width: impl $crate::IntoProp<f64>) -> Self {
                 self.common.width = Some(width.into_prop());
@@ -165,6 +192,28 @@ macro_rules! common_modifiers {
             /// Scale about the centre (static or reactive). Doesn't affect layout.
             pub fn scale(mut self, scale: impl $crate::IntoProp<f64>) -> Self {
                 self.common.scale = Some(scale.into_prop());
+                self
+            }
+
+            /// Opacity from `0.0` (transparent) to `1.0` (opaque), static or reactive.
+            pub fn opacity(mut self, opacity: impl $crate::IntoProp<f64>) -> Self {
+                self.common.opacity = Some(opacity.into_prop());
+                self
+            }
+
+            /// Shows (`true`) or collapses out of layout (`false`) reactively.
+            pub fn visible(mut self, visible: impl $crate::IntoProp<bool>) -> Self {
+                self.common.visible = Some(visible.into_prop());
+                self
+            }
+
+            /// Draws a rounded border of `width` logical pixels in `color` (static or reactive).
+            pub fn border(
+                mut self,
+                width: f64,
+                color: impl $crate::IntoProp<rugkit_render::Color>,
+            ) -> Self {
+                self.common.border = Some((width, color.into_prop()));
                 self
             }
 

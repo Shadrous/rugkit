@@ -1,6 +1,6 @@
 //! Input event types: pointer, keyboard, modifiers, IME, focus and menu actions.
 
-use rugkit_render::Point;
+use rugkit_render::{Point, Vec2};
 
 use crate::appearance::Appearance;
 
@@ -105,6 +105,13 @@ pub enum InputEvent {
     PointerUp(Point, PointerButton),
     /// The pointer left the window.
     PointerLeave,
+    /// Mouse wheel or trackpad scroll in logical pixels (positive `y` scrolls content down / moves viewport up).
+    Scroll {
+        /// Scroll delta in logical pixels.
+        delta: Vec2,
+        /// Pointer position in logical window coordinates.
+        position: Point,
+    },
     /// A key was pressed.
     KeyDown {
         /// Logical key.

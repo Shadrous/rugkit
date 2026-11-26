@@ -8,9 +8,11 @@ use rugkit_reactive::{Owner, Signal, batch};
 use rugkit_render::{Color, Painter, Point, Rect, Size};
 use rugkit_shell::{
     A11yAction, A11yTree, App, FrameInfo, ImeEvent, ImeState, InputEvent, Key, Modifiers,
-    PointerButton, WakeHandle, WindowCommand,
+    PointerButton, WakeHandle, WindowCommand, WindowSpec,
 };
 
+use crate::controls::paint_tooltip;
+use crate::inspector::Inspector;
 use crate::motion::{Animated, Motion};
 use crate::theme::{set_appearance, theme};
 use crate::tree::{Content, NodeId, TreeHandle};
@@ -58,13 +60,17 @@ pub struct Ui {
     hovered: Option<NodeId>,
     captured: Option<NodeId>,
     focused: Option<NodeId>,
+    pointer_pos: Option<Point>,
     animating: bool,
     last_size: Option<Size>,
     background: Animated<Color>,
     bg_initialized: bool,
     commands: Vec<WindowCommand>,
+    new_windows: Vec<WindowSpec>,
     clipboard: Clipboard,
     on_menu_action: Option<MenuHandler>,
+    inspector: Inspector,
+    inspector_allowed: bool,
 }
 
 impl std::fmt::Debug for Ui {
@@ -81,7 +87,7 @@ impl Ui {
         let tree = TreeHandle::new();
         let owner = Owner::new();
         let root = owner.run(|| {
-            let mut cx = BuildCx { tree: tree.clone() };
+            let mut cx = BuildCx::new(tree.clone());
             let content = view().build(&mut cx);
             let root = cx.node(
                 LayoutStyle {
@@ -103,14 +109,41 @@ impl Ui {
             hovered: None,
             captured: None,
             focused: None,
+            pointer_pos: None,
             animating: false,
             last_size: None,
             background: Animated::new(theme().background),
             bg_initialized: false,
             commands: Vec::new(),
+            new_windows: Vec::new(),
             clipboard: Clipboard::System,
             on_menu_action: None,
+            inspector: Inspector::default(),
+            inspector_allowed: cfg!(debug_assertions),
         }
+    }
+
+    /// Enables or disables the `⌘⌥I` in-app inspector (enabled by default in debug builds).
+    pub fn inspector_enabled(mut self, enabled: bool) -> Self {
+        self.inspector_allowed = enabled;
+        self
+    }
+
+    /// Toggles the in-app inspector overlay.
+    pub fn toggle_inspector(&mut self) {
+        self.inspector.open = !self.inspector.open;
+        self.tree.with(|t| t.mark_needs_frame());
+    }
+
+    /// Whether the in-app inspector overlay is currently open.
+    pub fn inspector_open(&self) -> bool {
+        self.inspector.open
+    }
+
+    /// Queues a new window to be opened on the shared UI thread.
+    pub fn open_window(&mut self, spec: WindowSpec) {
+        self.new_windows.push(spec);
+        self.tree.with(|t| t.mark_needs_frame());
     }
 
     /// Registers a handler invoked when a native menu bar item is activated (by its item ID).
@@ -227,6 +260,11 @@ impl Ui {
     }
 
     fn handle_key_down(&mut self, key: &Key, modifiers: Modifiers, text: Option<&str>) {
+        if self.inspector_allowed && self.inspector.handle_key(key, modifiers) {
+            self.tree.with(|t| t.mark_needs_frame());
+            return;
+        }
+
         // Tab / Shift+Tab always cycles focus.
         if *key == Key::Tab && !modifiers.ctrl && !modifiers.alt && !modifiers.meta {
             self.move_focus(modifiers.shift);
@@ -235,18 +273,27 @@ impl Ui {
 
         let Some(focused) = self.focused else { return };
 
-        let is_text_input = self.tree.with(|t| {
-            t.nodes
-                .get(focused)
-                .is_some_and(|n| matches!(n.content, Content::TextInput(_)))
+        let (is_text_input, on_key) = self.tree.with(|t| {
+            let n = t.nodes.get(focused);
+            let ti = n.is_some_and(|n| matches!(n.content, Content::TextInput(_)));
+            let ok = n
+                .and_then(|n| n.interaction.as_ref())
+                .and_then(|i| i.on_key.clone());
+            (ti, ok)
         });
+
+        if let Some(handler) = on_key
+            && batch(|| handler(key, modifiers))
+        {
+            return;
+        }
 
         if is_text_input {
             self.handle_text_input_key(focused, key, modifiers, text);
             return;
         }
 
-        // Focused button: Enter or Space activates it.
+        // Focused button/checkbox/switch/radio/tab: Enter or Space activates it.
         if matches!(key, Key::Enter | Key::Space) && modifiers.is_empty() {
             self.activate_node(focused);
         }
@@ -489,16 +536,27 @@ impl App for Ui {
     fn event(&mut self, event: &InputEvent) {
         match event {
             InputEvent::PointerMove(p) => {
+                self.pointer_pos = Some(*p);
                 let target = self.tree.with(|t| t.hit_test(*p));
                 self.set_hover(target);
-                // While a press is held, show the pressed look only while over the button.
-                if let Some(captured) = self.captured
-                    && let Some((_, pressed, _)) = self.signals(Some(captured))
-                {
-                    pressed.set_if_changed(target == Some(captured));
+                if let Some(captured) = self.captured {
+                    let drag = self.tree.with(|t| {
+                        let n = t.nodes.get(captured)?;
+                        let f = n.visual.frame.target();
+                        n.interaction
+                            .as_ref()
+                            .and_then(|i| i.on_drag.clone())
+                            .map(|h| (h, f))
+                    });
+                    if let Some((handler, rect)) = drag {
+                        batch(|| handler(*p, rect));
+                    } else if let Some((_, pressed, _)) = self.signals(Some(captured)) {
+                        pressed.set_if_changed(target == Some(captured));
+                    }
                 }
             }
             InputEvent::PointerDown(p, PointerButton::Primary) => {
+                self.pointer_pos = Some(*p);
                 let (target, draggable) =
                     self.tree.with(|t| (t.hit_test(*p), t.is_draggable_at(*p)));
                 self.set_hover(target);
@@ -509,8 +567,22 @@ impl App for Ui {
                 } else if draggable {
                     self.commands.push(WindowCommand::DragWindow);
                 }
+                if let Some(id) = target {
+                    let drag = self.tree.with(|t| {
+                        let n = t.nodes.get(id)?;
+                        let f = n.visual.frame.target();
+                        n.interaction
+                            .as_ref()
+                            .and_then(|i| i.on_drag.clone())
+                            .map(|h| (h, f))
+                    });
+                    if let Some((handler, rect)) = drag {
+                        batch(|| handler(*p, rect));
+                    }
+                }
             }
             InputEvent::PointerUp(p, PointerButton::Primary) => {
+                self.pointer_pos = Some(*p);
                 let target = self.tree.with(|t| t.hit_test(*p));
                 let Some(captured) = self.captured.take() else {
                     return;
@@ -522,7 +594,33 @@ impl App for Ui {
                     self.activate_node(captured);
                 }
             }
-            InputEvent::PointerLeave => self.set_hover(None),
+            InputEvent::PointerLeave => {
+                self.pointer_pos = None;
+                self.set_hover(None);
+            }
+            InputEvent::Scroll { delta, position } => {
+                let target = self.tree.with(|t| t.scroll_target_at(*position));
+                if let Some(id) = target {
+                    let custom_scroll = self.tree.with(|t| {
+                        t.nodes
+                            .get(id)
+                            .and_then(|n| n.interaction.as_ref())
+                            .and_then(|i| i.on_scroll.clone())
+                    });
+                    if let Some(handler) = custom_scroll {
+                        batch(|| handler(*delta));
+                    } else {
+                        self.tree.with(|t| {
+                            if let Some(n) = t.nodes.get_mut(id) {
+                                let next =
+                                    (n.visual.scroll_y.target() - delta.y).clamp(0.0, n.scroll_max);
+                                n.visual.scroll_y.set_target(next);
+                                t.mark_needs_frame();
+                            }
+                        });
+                    }
+                }
+            }
             InputEvent::KeyDown {
                 key,
                 modifiers,
@@ -564,8 +662,8 @@ impl App for Ui {
     }
 
     fn draw(&mut self, painter: &mut Painter<'_>, frame: &FrameInfo) {
-        // Clamp so a hitch can't fling springs across the screen.
-        let dt = frame.dt.as_secs_f64().min(1.0 / 20.0);
+        // Clamp so a hitch can't fling springs across the screen; apply inspector slow-mo.
+        let dt = frame.dt.as_secs_f64().min(1.0 / 20.0) * self.inspector.time_scale;
         let resized = self.last_size != Some(frame.size);
         self.last_size = Some(frame.size);
 
@@ -588,6 +686,7 @@ impl App for Ui {
             self.background.value(),
         );
         let focused = self.focused;
+        let pointer_pos = self.pointer_pos;
         let tree = self.tree.clone();
         tree.with(|t| {
             if t.needs_layout || resized {
@@ -595,6 +694,12 @@ impl App for Ui {
             }
             self.animating = t.step(dt, frame.reduce_motion) || bg_moving;
             t.paint(painter, focused);
+            if let Some(pos) = pointer_pos
+                && let Some((tip, anchor)) = t.tooltip_at(pos)
+            {
+                paint_tooltip(painter, &tip, anchor);
+            }
+            self.inspector.paint(painter, t, focused, frame);
             t.needs_frame = false;
         });
     }
@@ -654,6 +759,10 @@ impl App for Ui {
 
     fn take_commands(&mut self) -> Vec<WindowCommand> {
         std::mem::take(&mut self.commands)
+    }
+
+    fn take_new_windows(&mut self) -> Vec<WindowSpec> {
+        std::mem::take(&mut self.new_windows)
     }
 }
 

@@ -11,13 +11,19 @@
 mod brush;
 mod color;
 mod geometry;
+mod image;
+mod offscreen;
 mod painter;
+mod path;
 mod text;
 
 pub use brush::{Brush, Shadow};
 pub use color::Color;
 pub use geometry::{Point, Rect, Size, Transform, Vec2};
+pub use image::ImageData;
+pub use offscreen::{OffscreenRenderer, SnapshotDiff, compare_rgba};
 pub use painter::{Canvas, Painter};
+pub use path::Path;
 pub use text::{FontFamily, FontWeight, TextStyle, TextSystem};
 
 /// Internal integration API for `rugkit-shell`.

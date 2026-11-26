@@ -166,7 +166,18 @@ Order: vertical slice first. Prove that the "slick" feel works on a few widgets 
     - Public headless `Harness` that queries widgets by `Role` or label via `A11yTree` and drives pointer, keyboard, IME, AccessKit (VoiceOver), menu, appearance and isolated clipboard tests.
   - Counter demo updated with transparent titlebar, draggable header, native menu bar (`⌘=`/`⌘-`/`⌘0`), reactive dark/light + accent theme, and a `TextInput` note field. Measured on the base M1 while animating: ~0.62ms CPU, ~5.7ms average GPU (within the 8ms budget).
   - Tests: 17 reactive, 3 layout, 2 render, 14 widgets (including 4 new M2 headless harness tests covering VoiceOver/keyboard counter operation, CJK IME + clipboard in `TextInput`, animated appearance switching, and draggable titlebar + menu actions) + 16 doctests.
-- M3–M6: not started.
+- **M3: Breadth.** Done (2026-11-26).
+  - `rugkit-layout`: CSS Grid (`grid_columns`), `absolute_fill` overlays, `hidden` collapse, and RTL mirroring (`Direction::Rtl`).
+  - `rugkit-render`: `Path` (including SVG `d` parsing), `ImageData`, `Painter::with_opacity`, `fill_path`, `stroke_path`, `stroke_line`, `draw_image`, and GPU `OffscreenRenderer` + `compare_rgba` for non-blocking pixel snapshot tests.
+  - `rugkit-shell`: multi-window (`run_windows`, `WindowSpec`, `App::take_new_windows`), mouse wheel / trackpad `InputEvent::Scroll`, and expanded AccessKit roles (`Checkbox`, `Switch`, `Slider`, `RadioButton`, `ComboBox`, `Tab`, `TabList`, `Dialog`, `List`, `ScrollView`, `Image`, `Tooltip`) with checked & numeric state.
+  - `rugkit-widgets`:
+    - Typed token theming (`Theme`, `Radii`, `Spacing`, `TypeScale`) with reactive subtree overrides (`theme_scope`) and RTL scopes (`direction_scope`).
+    - Full core widget set: `checkbox`, `toggle`, `slider`, `radio`, `select`, `scroll`, `virtual_list` (100k+ rows), `tabs`, `modal`, `popover`, `tooltip`, `image`, `grid`, `zstack`, multiline/disabled `text_input`, and bundled Lucide vector icons (`icon(IconName::...)`, behind default-on `icons` feature).
+    - In-app `⌘⌥I` inspector (layout bounds overlay, slow-motion time scale, live Light/Dark & accent preset switching, focus & frame timing HUD).
+    - Non-blocking offscreen pixel snapshot helper (`check_snapshot`).
+  - `gallery` example (`cargo run --release --example gallery`) visually verified in both Light and Dark mode (`docs/screenshots/m3_gallery_light.png`, `docs/screenshots/m3_gallery_dark.png`).
+  - Tests: 17 reactive, 5 layout, 2 render, 16 widgets (including full M3 controls/modal/tabs/slider/virtual-list test and offscreen GPU snapshot test) + 16 doctests.
+- M4–M6: not started.
 
 ## Open questions
 - A logo, and whether to move the repo to a GitHub organisation.
