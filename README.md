@@ -8,7 +8,9 @@ rugkit is a Rust GUI framework built around visual polish and motion: a bold, pl
 
 ![Minty, the rugkit flagship personal finance app: sidebar navigation, animated Canvas spending and cashflow charts, virtualised transactions Table, budget forms and local JSON persistence](docs/screenshots/flagship_finance.png)
 
-> 🎬 Watch the recorded flagship walkthrough: [docs/demo/flagship.mp4](docs/demo/flagship.mp4)
+![Pulse Studio, the rugkit creative audio-visual synth & motion workstation: real-time 24-band FFT spectrum & Bézier oscilloscope Canvas, 4×8 step sequencer, Synth & FX rack, and Track Stems Table with custom mini-waveform cells](docs/screenshots/flagship_studio.png)
+
+> 🎬 **Watch the 1080p 60fps launch motion video** (rendered 100% natively on the GPU by rugkit's own `Painter` + `OffscreenRenderer`): [docs/demo/rugkit_launch.mp4](docs/demo/rugkit_launch.mp4) · Flagship walkthrough: [docs/demo/flagship.mp4](docs/demo/flagship.mp4)
 
 ## What works today
 - **Windowing & multi-window:** GPU-rendered frame loop (`winit` + `wgpu`/Metal + `vello`), multi-window with shared signals (`run_windows`), transparent macOS titlebar with draggable regions, native macOS menu bars (`muda`), system clipboard (`arboard`), and on-demand redraws (idle windows draw nothing).
@@ -26,11 +28,13 @@ rugkit is a Rust GUI framework built around visual polish and motion: a bold, pl
 Requires macOS and Rust 1.98 or newer.
 
 ```bash
-cargo run --release --example finance       # Flagship personal finance app
+cargo run --release --example finance       # Flagship #1: Minty personal finance app
+cargo run --release --example studio        # Flagship #2: Pulse Studio creative workstation
 cargo run --release --example canvas_chart  # Animated Canvas charts + 100k-row Table
 cargo run --release --example gallery       # Full widget gallery (Light & Dark)
 cargo run --release --example todo          # Interactive Todo app
 cargo run --release --example counter       # Counter with springs, IME, AccessKit & menus
+cargo run --release --example render_promo  # Render the 1080p 60fps launch video via OffscreenRenderer
 ```
 
 ```rust

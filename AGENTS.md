@@ -44,7 +44,9 @@ v1 runs only on macOS, but only `rugkit-shell` may contain platform-specific cod
 Cargo.toml                 workspace root (edition 2024, shared deps and lints)
 crates/
   rugkit/                  facade crate: the one dependency users add; re-exports the others; `launch`, `launch_reloadable`
-    examples/finance.rs    M6 flagship: personal finance app (sidebar, Canvas charts, Table, budgets, import modal, local JSON)
+    examples/finance.rs    M6 flagship #1: personal finance app (sidebar, Canvas charts, Table, budgets, import modal, local JSON)
+    examples/studio.rs     M6 flagship #2: Pulse Studio creative workstation (real-time FFT/oscilloscope Canvas, step sequencer, Synth/FX rack, custom waveform Table)
+    examples/render_promo.rs 1080p 60fps launch motion video renderer (`OffscreenRenderer` + `Painter` + `Ui` piped to `ffmpeg`)
     examples/canvas_chart.rs M4 demo: animated reactive Canvas charts + 100k-row virtualised Table
     examples/gallery.rs    M3 demo: full widget gallery in light & dark, RTL, subtree theme, 100k list, inspector
     examples/todo.rs       M6 demo: interactive Todo app
@@ -60,7 +62,7 @@ crates/
 book/                      mdBook guide (`mdbook build book`)
 .github/workflows/ci.yml   fmt, clippy, tests, docs on a macOS runner
 docs/screenshots/          images used by README (window-only captures)
-docs/demo/                 recorded flagship walkthrough video
+docs/demo/                 recorded flagship walkthrough video & 1080p60 launch promo video
 PLAN.md                    product decisions, scope, milestones, status
 ```
 

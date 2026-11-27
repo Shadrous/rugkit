@@ -40,8 +40,8 @@ pub use rugkit_reactive::{
     Effect, Memo, Owner, Signal, Tracker, batch, effect, memo, on_cleanup, signal, untrack,
 };
 pub use rugkit_render::{
-    Brush, Color, FontFamily, FontWeight, ImageData, OffscreenRenderer, Painter, Path, Point, Rect,
-    Shadow, Size, SnapshotDiff, TextStyle, Transform, Vec2, compare_rgba,
+    Brush, Canvas, Color, FontFamily, FontWeight, ImageData, OffscreenRenderer, Painter, Path,
+    Point, Rect, Shadow, Size, SnapshotDiff, TextStyle, Transform, Vec2, compare_rgba,
 };
 pub use rugkit_shell::{
     A11yAction, A11yId, A11yNode, A11yTree, App, Appearance, ColorScheme, Error, FrameInfo,
